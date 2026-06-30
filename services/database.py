@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from dotenv import load_dotenv
 
 from sqlalchemy import (
     DateTime,
@@ -18,6 +20,9 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, rela
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "database.db"
+
+# Load environment variables (from .env file on local runs)
+load_dotenv(BASE_DIR / ".env")
 
 LANGUAGES = ["KR", "EN", "JP", "CN"]
 USERS = ("Rin", "Friend")
@@ -76,8 +81,36 @@ class Progress(Base):
     vocabulary: Mapped[Vocabulary] = relationship(back_populates="progress")
 
 
-DATA_DIR.mkdir(exist_ok=True)
-engine = create_engine(f"sqlite:///{DB_PATH}", future=True)
+TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL")
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
+
+if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
+    # Use remote Turso (libSQL) database
+    url = TURSO_DATABASE_URL
+    if url.startswith("libsql://"):
+        url = url.replace("libsql://", "sqlite+libsql://")
+    elif not url.startswith("sqlite+libsql://"):
+        url = f"sqlite+libsql://{url}"
+    
+    # Append secure=true for security unless connecting to localhost
+    if "secure=true" not in url and not url.startswith("sqlite+libsql://localhost"):
+        if "?" in url:
+            url += "&secure=true"
+        else:
+            url += "/?secure=true"
+
+    engine = create_engine(
+        url,
+        connect_args={
+            "auth_token": TURSO_AUTH_TOKEN,
+        },
+        future=True
+    )
+else:
+    # Fallback to local SQLite database
+    DATA_DIR.mkdir(exist_ok=True)
+    engine = create_engine(f"sqlite:///{DB_PATH}", future=True)
+
 SessionLocal = sessionmaker(bind=engine, future=True)
 
 
