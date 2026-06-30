@@ -255,6 +255,30 @@ def form_input_ui(session, deck: Deck) -> None:
         rerun()
 
 
+def optimize_image(image: Image.Image, max_size: int = 1200, quality: int = 80) -> Image.Image:
+    # Convert RGBA/P to RGB if necessary (JPEG doesn't support transparency)
+    if image.mode in ("RGBA", "P"):
+        image = image.convert("RGB")
+    
+    # Resize if any dimension is larger than max_size
+    width, height = image.size
+    if width > max_size or height > max_size:
+        if width > height:
+            new_width = max_size
+            new_height = int(height * (max_size / width))
+        else:
+            new_height = max_size
+            new_width = int(width * (max_size / height))
+        image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    
+    # Compress the image by saving as JPEG to BytesIO
+    from io import BytesIO
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG", quality=quality, optimize=True)
+    buffer.seek(0)
+    return Image.open(buffer)
+
+
 def ai_import_ui(session, deck: Deck) -> None:
     st.caption(f"Ngôn ngữ của chủ đề: {deck.language}")
     mode = st.radio("Nguồn dữ liệu", ["Quét ảnh viết tay", "Dán văn bản"], horizontal=True)
@@ -262,13 +286,176 @@ def ai_import_ui(session, deck: Deck) -> None:
 
     try:
         if mode == "Quét ảnh viết tay":
-            uploaded_image = st.file_uploader("Tải ảnh lên", type=["jpg", "jpeg", "png", "webp"])
+            if st.session_state.get("clear_pasted"):
+                st.session_state.pasted_image_base64 = ""
+                st.session_state.clear_pasted = False
+
+            # Paste image from clipboard container (hidden from view)
+            st.markdown(
+                """
+                <style>
+                .st-key-pasted_image_base64 {
+                    display: none !important;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+            pasted_base64 = st.text_area("Pasted Base64", key="pasted_image_base64")
+
+            # Side-by-side: File Uploader and Paste Zone
+            col_upload, col_paste = st.columns(2)
+            with col_upload:
+                uploaded_image = st.file_uploader("Tải ảnh lên", type=["jpg", "jpeg", "png", "webp"])
+            with col_paste:
+                st.components.v1.html(
+                    """
+                    <div id="paste-zone" tabindex="0" style="
+                        border: 2px dashed rgba(128, 128, 128, 0.4);
+                        border-radius: 8px;
+                        padding: 16px 12px;
+                        text-align: center;
+                        color: var(--text-color, #2D2A26);
+                        background-color: var(--secondary-background-color, #EFECE6);
+                        cursor: pointer;
+                        font-family: sans-serif;
+                        font-size: 14px;
+                        font-weight: 500;
+                        outline: none;
+                        transition: border-color 0.2s;
+                        height: 52px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        box-sizing: border-box;
+                    ">
+                        📋 Bấm vào đây & nhấn Ctrl + V để dán ảnh
+                    </div>
+                    <script>
+                        const zone = document.getElementById('paste-zone');
+                        
+                        try {
+                            const parentStyle = window.parent.getComputedStyle(window.parent.document.body);
+                            zone.style.color = parentStyle.getPropertyValue('--text-color');
+                            zone.style.backgroundColor = parentStyle.getPropertyValue('--secondary-background-color');
+                            
+                            zone.addEventListener('focus', () => {
+                                zone.style.borderColor = parentStyle.getPropertyValue('--primary-color');
+                            });
+                            zone.addEventListener('blur', () => {
+                                zone.style.borderColor = 'rgba(128, 128, 128, 0.4)';
+                            });
+                        } catch (e) {
+                            console.error("Failed to copy style properties:", e);
+                        }
+
+                        const handlePaste = (e) => {
+                            console.log("Paste event triggered on element", e.currentTarget, e);
+                            const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+                            console.log("Clipboard items list:", items);
+                            for (let i = 0; i < items.length; i++) {
+                                if (items[i].type.indexOf('image') !== -1) {
+                                    console.log("Image format detected in clipboard item:", items[i].type);
+                                    const blob = items[i].getAsFile();
+                                    const reader = new FileReader();
+                                    reader.onload = (event) => {
+                                        const base64Data = event.target.result;
+                                        console.log("Base64 conversion successful. Data length:", base64Data.length);
+                                        const textarea = window.parent.document.querySelector('.st-key-pasted_image_base64 textarea');
+                                        if (textarea) {
+                                            console.log("Writing base64 image data to parent textarea using React prototype value setter...");
+                                            const nativeTextAreaValueSetter = Object.getOwnPropertyDescriptor(
+                                                window.HTMLTextAreaElement.prototype,
+                                                'value'
+                                            ).set;
+                                            nativeTextAreaValueSetter.call(textarea, base64Data);
+                                            
+                                            // 1. Dispatch input event to update React local state
+                                            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                                            
+                                            // 2. Dispatch change event
+                                            textarea.dispatchEvent(new Event('change', { bubbles: true }));
+                                            
+                                            // 3. Dispatch blur event to trigger Streamlit's state sync to Python
+                                            textarea.dispatchEvent(new Event('blur', { bubbles: true }));
+                                            
+                                            // 4. Dispatch Ctrl+Enter keydown event to force submission
+                                            const keydownEvent = new KeyboardEvent('keydown', {
+                                                key: 'Enter',
+                                                code: 'Enter',
+                                                keyCode: 13,
+                                                which: 13,
+                                                ctrlKey: true,
+                                                metaKey: true,
+                                                bubbles: true,
+                                                cancelable: true
+                                            });
+                                            textarea.dispatchEvent(keydownEvent);
+                                            
+                                            console.log("All events (input, change, blur, Ctrl+Enter keydown) dispatched successfully.");
+                                        } else {
+                                            console.error("Target textarea (.st-key-pasted_image_base64 textarea) not found in parent document!");
+                                        }
+                                    };
+                                    reader.readAsDataURL(blob);
+                                    e.preventDefault();
+                                    break;
+                                }
+                            }
+                        };
+
+                        // Listen locally in the iframe
+                        zone.addEventListener('paste', handlePaste);
+                        console.log("Local paste listener registered on iframe zone.");
+
+                        // Listen globally on the parent window's document to catch Ctrl+V anywhere
+                        try {
+                            if (window.parent && window.parent.document) {
+                                // Prevent duplicates by removing the previous handler stored on parent window
+                                if (window.parent.__rin_anki_paste_handler__) {
+                                    window.parent.document.removeEventListener('paste', window.parent.__rin_anki_paste_handler__);
+                                    console.log("Previous global paste handler removed from parent document.");
+                                }
+                                
+                                // Save current handler reference globally
+                                window.parent.__rin_anki_paste_handler__ = handlePaste;
+                                
+                                // Register new handler
+                                window.parent.document.addEventListener('paste', handlePaste);
+                                console.log("New global paste listener registered on parent document.");
+                            }
+                        } catch (err) {
+                            console.error("Global paste listener attachment failed:", err);
+                        }
+                    </script>
+                    """,
+                    height=90,
+                )
+
+            image = None
             if uploaded_image is not None:
                 image = Image.open(uploaded_image)
+            elif pasted_base64:
+                try:
+                    import base64
+                    from io import BytesIO
+                    img_data = base64.b64decode(pasted_base64.split(",")[1])
+                    image = Image.open(BytesIO(img_data))
+                except Exception as e:
+                    st.error(f"Lỗi đọc ảnh từ clipboard: {e}")
+
+            if image is not None:
                 st.image(image, width=420)
+                
+                if pasted_base64:
+                    if st.button("Xóa ảnh đã dán", use_container_width=True):
+                        st.session_state.clear_pasted = True
+                        st.rerun()
+
                 if st.button("Quét bằng AI"):
                     with st.spinner("Đang trích xuất từ vựng bằng Gemini..."):
-                        entries = GeminiVocabularyExtractor().extract_from_image(image)
+                        optimized_image = optimize_image(image)
+                        entries = GeminiVocabularyExtractor().extract_from_image(optimized_image)
         else:
             pasted = st.text_area("Dán ghi chú")
             if st.button("Phân tích bằng AI") and pasted.strip():
