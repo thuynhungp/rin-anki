@@ -125,6 +125,14 @@ def apply_theme(theme_name: str) -> None:
         unsafe_allow_html=True,
     )
 
+def get_allowed_languages(user_name: str) -> list[str]:
+    if user_name == "Rin":
+        return ["KR"]
+    elif user_name == "Friend":
+        return ["EN", "JP", "CN"]
+    return LANGUAGES
+
+
 MENU_ITEMS = ["Thêm từ vựng", "Danh sách từ", "Chủ đề", "Quiz", "HDSD"]
 USER_DISPLAY_NAMES = {"Rin": "Rin", "Friend": "Châu"}
 VOCABULARY_COLUMN_LABELS = {
@@ -304,12 +312,20 @@ def ai_import_ui(session, deck: Deck) -> None:
             pasted_base64 = st.text_area("Pasted Base64", key="pasted_image_base64")
 
             # Side-by-side: File Uploader and Paste Zone
-            col_upload, col_paste = st.columns(2)
+            col_upload, col_paste = st.columns(2, vertical_alignment="bottom")
             with col_upload:
                 uploaded_image = st.file_uploader("Tải ảnh lên", type=["jpg", "jpeg", "png", "webp"])
             with col_paste:
                 st.components.v1.html(
                     """
+                    <style>
+                        html, body {
+                            margin: 0;
+                            padding: 0;
+                            height: 100%;
+                            overflow: hidden;
+                        }
+                    </style>
                     <div id="paste-zone" tabindex="0" style="
                         border: 2px dashed rgba(128, 128, 128, 0.4);
                         border-radius: 8px;
@@ -323,7 +339,7 @@ def ai_import_ui(session, deck: Deck) -> None:
                         font-weight: 500;
                         outline: none;
                         transition: border-color 0.2s;
-                        height: 52px;
+                        height: 100%;
                         display: flex;
                         align-items: center;
                         justify-content: center;
@@ -429,7 +445,7 @@ def ai_import_ui(session, deck: Deck) -> None:
                         }
                     </script>
                     """,
-                    height=90,
+                    height=75,
                 )
 
             image = None
@@ -506,7 +522,8 @@ def add_vocabulary_screen() -> None:
     with SessionLocal() as session:
         with st.expander("Thêm chủ đề", expanded=False):
             with st.form("create-topic-from-add", clear_on_submit=True):
-                topic_language = st.selectbox("Ngôn ngữ", LANGUAGES, key="add_topic_language")
+                allowed_langs = get_allowed_languages(user["name"])
+                topic_language = st.selectbox("Ngôn ngữ", allowed_langs, key="add_topic_language")
                 topic_name = st.text_input("Tên chủ đề mới")
                 if st.form_submit_button("Tạo chủ đề") and topic_name.strip():
                     create_deck(session, user["id"], topic_name, topic_language)
@@ -596,7 +613,8 @@ def topic_screen() -> None:
             )
 
         with st.form("create-deck", clear_on_submit=True):
-            language = st.selectbox("Ngôn ngữ", LANGUAGES, key="topic_language")
+            allowed_langs = get_allowed_languages(user["name"])
+            language = st.selectbox("Ngôn ngữ", allowed_langs, key="topic_language")
             name = st.text_input("Tên chủ đề mới", placeholder="Ví dụ: Bài 2, TOPIK I, Business English")
             if st.form_submit_button("Tạo chủ đề") and name.strip():
                 create_deck(session, user["id"], name, language)
@@ -606,7 +624,12 @@ def topic_screen() -> None:
         if deck is None:
             return
 
-        new_language = st.selectbox("Ngôn ngữ", LANGUAGES, index=LANGUAGES.index(deck.language))
+        allowed_langs = get_allowed_languages(user["name"])
+        try:
+            default_index = allowed_langs.index(deck.language)
+        except ValueError:
+            default_index = 0
+        new_language = st.selectbox("Ngôn ngữ", allowed_langs, index=default_index)
         new_name = st.text_input("Tên mới", value=deck.name)
         left, right = st.columns(2)
         if left.button("Đổi tên", use_container_width=True) and new_name.strip():

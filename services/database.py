@@ -135,11 +135,12 @@ def init_db() -> None:
                 user = User(name=name, theme="Dịu mắt")
                 session.add(user)
                 session.flush()
-                session.add(Deck(user_id=user.id, language="KR", name="Bài 1"))
+                default_lang = "KR" if name == "Rin" else "EN"
+                session.add(Deck(user_id=user.id, language=default_lang, name="Bài 1"))
             else:
                 for deck in user.decks:
                     if not deck.language:
-                        deck.language = "KR"
+                        deck.language = "KR" if name == "Rin" else "EN"
                     if deck.name == "Bai 1":
                         deck.name = "Bài 1"
         session.commit()
