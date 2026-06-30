@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.env
+.venv/
+data/database.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+streamlit.*.log
