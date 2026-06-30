@@ -174,7 +174,7 @@ def select_user_screen() -> None:
         users = get_users(session)
 
     columns = st.columns([1, 1], gap="large")
-    avatars = {"Rin": "👩", "Châu": "👨"}
+    avatars = {"Rin": "🗿", "Châu": "🥴"}
     for column, user in zip(columns, users):
         name = display_user_name(user.name)
         with column:
@@ -187,7 +187,7 @@ def select_user_screen() -> None:
                                 cursor: pointer; transition: transform 0.2s, box-shadow 0.2s;'
                                  onmouseover="this.style.transform='scale(1.05)'; this.style.boxShadow='0 4px 15px rgba(0,0,0,0.1)';"
                                  onmouseout="this.style.transform='scale(1)'; this.style.boxShadow='none';">
-                        <div style='font-size:72px'>{avatars.get(user.name, "🙂")}</div>
+                        <div style='font-size:72px'>{avatars.get(name, "🙂")}</div>
                         <div style='font-size:26px; margin-top:16px; font-weight: 500; color: var(--text-color);'>{name}</div>
                     </div>
                 </a>
