@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import libsql
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from dotenv import load_dotenv
@@ -81,36 +82,34 @@ class Progress(Base):
     vocabulary: Mapped[Vocabulary] = relationship(back_populates="progress")
 
 
-TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL")
-TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
+class LibSQLConnectionProxy:
+    def __init__(self, conn):
+        self._conn = conn
 
-if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
-    # Use remote Turso (libSQL) database
-    url = TURSO_DATABASE_URL
-    if url.startswith("libsql://"):
-        url = url.replace("libsql://", "sqlite+libsql://")
-    elif not url.startswith("sqlite+libsql://"):
-        url = f"sqlite+libsql://{url}"
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def create_function(self, *args, **kwargs):
+        # Dummy function to satisfy SQLAlchemy's sqlite dialect
+        return None
+
+
+def get_connection():
+    db_url = os.getenv("TURSO_DATABASE_URL")
+    auth_token = os.getenv("TURSO_AUTH_TOKEN")
     
-    # Append secure=true for security unless connecting to localhost
-    if "secure=true" not in url and not url.startswith("sqlite+libsql://localhost"):
-        if "?" in url:
-            url += "&secure=true"
-        else:
-            url += "/?secure=true"
+    if db_url and auth_token:
+        # Connect to remote Turso database
+        conn = libsql.connect(database=db_url, auth_token=auth_token)
+    else:
+        # Fallback to local SQLite database
+        DATA_DIR.mkdir(exist_ok=True)
+        conn = libsql.connect(str(DB_PATH))
+        
+    return LibSQLConnectionProxy(conn)
 
-    engine = create_engine(
-        url,
-        connect_args={
-            "auth_token": TURSO_AUTH_TOKEN,
-        },
-        future=True
-    )
-else:
-    # Fallback to local SQLite database
-    DATA_DIR.mkdir(exist_ok=True)
-    engine = create_engine(f"sqlite:///{DB_PATH}", future=True)
 
+engine = create_engine("sqlite://", creator=get_connection, future=True)
 SessionLocal = sessionmaker(bind=engine, future=True)
 
 
