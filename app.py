@@ -23,7 +23,12 @@ from services.database import (
 )
 
 st.set_page_config(page_title="Rin Anki", page_icon="📚", layout="wide")
-init_db()
+
+@st.cache_resource
+def run_db_initialization():
+    init_db()
+
+run_db_initialization()
 
 THEMES = {
     "Dịu mắt": {
