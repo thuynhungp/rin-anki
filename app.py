@@ -335,7 +335,7 @@ def ai_import_ui(session, deck: Deck) -> None:
     try:
         if mode == "Quét ảnh viết tay":
             if st.session_state.get("clear_pasted"):
-                st.session_state.pasted_image_base64 = ""
+                st.session_state.pop("pasted_image_base64", None)
                 st.session_state.clear_pasted = False
 
             # Paste image from clipboard container (hidden from view)
@@ -777,7 +777,7 @@ def topic_screen() -> None:
 
 def render_markdown_toolbar(content_key: str):
     st.caption("Chèn nhanh cú pháp Markdown:")
-    cols = st.columns(8)
+    cols = st.columns(4)
     tags = [
         ("Tiêu đề 1", "# "),
         ("Tiêu đề 2", "## "),
@@ -789,7 +789,8 @@ def render_markdown_toolbar(content_key: str):
         ("Hộp lưu ý", "\n> [!NOTE]\n> Nội dung lưu ý ở đây\n"),
     ]
     for index, (label, snippet) in enumerate(tags):
-        if cols[index % 8].button(label, key=f"btn_tag_{content_key}_{index}", use_container_width=True):
+        col_idx = index % 4
+        if cols[col_idx].button(label, key=f"btn_tag_{content_key}_{index}", use_container_width=True):
             current_val = st.session_state.get(content_key, "")
             st.session_state[content_key] = current_val + snippet
             st.rerun()
@@ -817,7 +818,7 @@ def grammar_notes_screen() -> None:
             if mode == "Quét từ ảnh chụp":
                 # Clipboard paste handling for notes
                 if st.session_state.get("clear_pasted_note"):
-                    st.session_state.pasted_note_image_base64 = ""
+                    st.session_state.pop("pasted_note_image_base64", None)
                     st.session_state.clear_pasted_note = False
 
                 st.markdown(
@@ -986,12 +987,12 @@ def grammar_notes_screen() -> None:
                         # Reset states
                         st.session_state.new_note_title = ""
                         st.session_state.new_note_content = ""
-                        st.session_state.pasted_note_image_base64 = ""
+                        st.session_state.pop("pasted_note_image_base64", None)
                         st.rerun()
                 if right_btn.button("Hủy bỏ", use_container_width=True):
                     st.session_state.new_note_title = ""
                     st.session_state.new_note_content = ""
-                    st.session_state.pasted_note_image_base64 = ""
+                    st.session_state.pop("pasted_note_image_base64", None)
                     st.rerun()
 
         # --- TAB 2: SEARCH NOTES ---
