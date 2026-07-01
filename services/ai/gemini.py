@@ -149,21 +149,29 @@ class GeminiVocabularyExtractor:
         )
         raise RuntimeError(f"Tất cả model/key Gemini đều thất bại khi chia động từ:\n{detail}")
 
-    def extract_grammar_note(self, image: Image.Image) -> str:
+    def extract_grammar_note(self, image: Image.Image, known_words: list[str] = None) -> str:
         keys = self._available_keys()
         if not keys:
             raise RuntimeError("Chưa tìm thấy Gemini API key. Hãy thêm key vào file .env trước.")
 
-        prompt = """
+        known_words_str = ""
+        if known_words:
+            known_words_str = f"\nDanh sách từ vựng người học đã biết (hãy ưu tiên sử dụng các từ này hoặc các từ đơn giản tương đương để đặt ví dụ):\n{', '.join(known_words)}\n"
+
+        prompt = f"""
 Bạn là một trợ lý AI học tập xuất sắc. Hãy đọc hình ảnh ghi chú viết tay này và trích xuất nội dung thành định dạng Markdown sạch đẹp.
 
 Quy tắc định dạng:
-1. Giữ nguyên cấu trúc phân cấp (dùng tiêu đề Markdown thích hợp #, ## hoặc ### cho các phần).
-2. Tự động nhận diện các điểm ngữ pháp cấu trúc, công thức, quy tắc hoặc ví dụ quan trọng và định dạng chúng nổi bật:
+1. Dòng đầu tiên của phản hồi phải luôn là tiêu đề chính tóm tắt ngắn gọn điểm ngữ pháp hoặc chủ đề chính của ghi chú, bắt đầu bằng dấu '#' (ví dụ: '# Ngữ pháp -아/어/여야 하다' hoặc '# Cách dùng V + (u)니까').
+2. Dòng thứ hai trở đi: Giữ nguyên cấu trúc phân cấp (dùng tiêu đề Markdown thích hợp ## hoặc ### cho các phần nội dung bên dưới).
+3. Tự động nhận diện các điểm ngữ pháp cấu trúc, công thức, quy tắc hoặc ví dụ quan trọng và định dạng chúng nổi bật:
    - Dùng chữ in đậm (**chữ**) cho cấu trúc ngữ pháp chính hoặc từ khóa quan trọng.
    - Dùng thẻ highlight (<mark>chữ</mark>) để làm nổi bật các phần lưu ý quan trọng, quy tắc bất quy tắc hoặc thông tin cốt lõi cần ghi nhớ.
-3. Bảo toàn tối đa nội dung ghi chú gốc, dịch hoặc giữ nguyên phần giải thích nếu có.
-4. Trả về trực tiếp nội dung dưới dạng Markdown, không bao quanh bằng khối code ```markdown.
+4. Với mỗi điểm cấu trúc ngữ pháp được trích xuất, hãy tự động tạo ra đúng 2 ví dụ thực tế (kèm theo bản dịch nghĩa tiếng Việt) để minh họa rõ nét cách dùng, ngay cả khi ghi chú gốc không ghi ví dụ.{known_words_str}
+5. Nếu ghi chú viết tay quá ngắn hoặc chỉ chứa công thức ngữ pháp thô (thiếu lời giải thích), hãy chủ động bổ sung phần giải thích chi tiết về ý nghĩa, cách sử dụng, đối tượng đi kèm (động từ, tính từ, hay danh từ) và các lưu ý quan trọng để ghi chú hoàn thiện và dễ học hơn.
+6. Toàn bộ phần giải thích, chú thích và tựa đề của ghi chú phải được viết bằng tiếng Việt. Các câu ví dụ viết bằng tiếng Hàn (kèm dịch nghĩa tiếng Việt ngay bên dưới).
+7. Bảo toàn tối đa nội dung ghi chú gốc, dịch giải nghĩa sang tiếng Việt nếu ghi chú gốc dùng ngôn ngữ khác.
+8. Trả về trực tiếp nội dung dưới dạng Markdown, không bao quanh bằng khối code ```markdown.
 """
         contents = [prompt, image]
         errors: list[AttemptError] = []

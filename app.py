@@ -13,6 +13,7 @@ from PIL import Image
 from sqlalchemy import select
 
 from services.ai.gemini import GeminiVocabularyExtractor
+from services.ai.grammar_agent import GrammarAgent
 from services.ai.importer import entries_to_preview_frame, valid_import_rows
 from services.database import (
     Deck,
@@ -925,11 +926,22 @@ def grammar_notes_screen() -> None:
                     if st.button("Quét và trích xuất bằng AI", use_container_width=True):
                         with st.spinner("AI đang quét chữ viết tay và phân tích điểm ngữ pháp..."):
                             optimized = optimize_image(note_image)
-                            extracted_markdown = GeminiVocabularyExtractor().extract_grammar_note(optimized)
-                            st.session_state.new_note_content = extracted_markdown
-                            # Set default title if blank
-                            now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
-                            st.session_state.new_note_title = f"Ghi chú ngữ pháp {now_str}"
+                            extracted_markdown = GrammarAgent().process_note_with_vocab(optimized, session, user["id"])
+                            # Parse title from the first line if it starts with #
+                            lines = extracted_markdown.strip().split("\n")
+                            title_found = False
+                            if lines and lines[0].strip().startswith("#"):
+                                first_line = lines[0].strip()
+                                parsed_title = first_line.lstrip("#").strip()
+                                if parsed_title:
+                                    st.session_state.new_note_title = parsed_title
+                                    st.session_state.new_note_content = "\n".join(lines[1:]).strip()
+                                    title_found = True
+                            
+                            if not title_found:
+                                st.session_state.new_note_content = extracted_markdown
+                                now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+                                st.session_state.new_note_title = f"Ghi chú ngữ pháp {now_str}"
                             st.rerun()
 
             elif mode == "Tự nhập tay":
