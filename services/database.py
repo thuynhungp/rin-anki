@@ -179,6 +179,18 @@ def add_vocabulary(session: Session, deck_id: int, row: dict[str, str]) -> Vocab
     return vocab
 
 
+def check_vocabulary_exists(session: Session, deck_id: int, word: str) -> bool:
+    from sqlalchemy import func
+    word_stripped = word.strip().lower()
+    statement = select(Vocabulary).where(
+        Vocabulary.deck_id == deck_id,
+        func.lower(Vocabulary.word) == word_stripped
+    )
+    result = session.scalars(statement).all()
+    return len(result) > 0
+
+
+
 def update_schedule(session: Session, vocabulary_id: int, result: str) -> None:
     progress = session.scalar(select(Progress).where(Progress.vocabulary_id == vocabulary_id))
     if progress is None:
@@ -187,7 +199,7 @@ def update_schedule(session: Session, vocabulary_id: int, result: str) -> None:
 
     current_streak = progress.remember_streak or 0
     if result == "forgot":
-        progress.next_review = now_utc() + timedelta(minutes=15)
+        progress.next_review = now_utc() + timedelta(minutes=5)
         progress.remember_streak = 0
         progress.wrong_count = (progress.wrong_count or 0) + 1
     elif result == "partial":

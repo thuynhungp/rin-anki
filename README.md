@@ -15,7 +15,7 @@
 - **Nhập từ vựng thông minh**:
   - **Form Input**: Nhập từ, nghĩa, ví dụ, ghi chú thủ công.
   - **Nhập bằng AI (Gemini)**: Quét chữ viết tay từ hình ảnh hoặc phân tích ghi chú văn bản thô. Hỗ trợ xem trước và chỉnh sửa trực tiếp trước khi nhập.
-- **Thuật toán ôn tập (Quiz)**: Phỏng theo cơ chế **Spaced Repetition** (Lặp lại ngắt quãng) tương tự Anki với 3 mức độ nhớ: "Chưa nhớ" (15 phút), "Nhớ sơ sơ" (2 giờ), và "Nhớ rồi" (tăng dần 7 ➜ 14 ➜ 30 ➜ 60 ➜ 90 ngày).
+- **Thuật toán ôn tập (Quiz)**: Phỏng theo cơ chế **Spaced Repetition** (Lặp lại ngắt quãng) tương tự Anki với 3 mức độ nhớ: "Chưa nhớ" (5 phút), "Nhớ sơ sơ" (2 giờ), và "Nhớ rồi" (tăng dần 7 ➜ 14 ➜ 30 ➜ 60 ➜ 90 ngày).
 - **Tích hợp Tab HDSD (Hướng dẫn sử dụng)**: Hướng dẫn chi tiết cách thức hoạt động của các tính năng ngay trong ứng dụng.
 - **Cơ sở dữ liệu SQLite**: Lưu trữ tại `data/database.db` có cơ chế tự động chạy di chuyển cột (migration) an toàn khi nâng cấp ứng dụng.
 

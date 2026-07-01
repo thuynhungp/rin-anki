@@ -50,9 +50,30 @@ class GeminiVocabularyExtractor:
         prompt = build_extraction_prompt("text", text=text)
         return self._extract([prompt])
 
+    def _ocr_image(self, image: Image.Image) -> str:
+        keys = self._available_keys()
+        if not keys:
+            raise RuntimeError("Chưa tìm thấy Gemini API key. Hãy thêm key vào file .env trước.")
+
+        prompt = "Hãy đọc và sao chép lại chính xác toàn bộ văn bản/chữ viết tay có trong hình ảnh này. Giữ nguyên cấu trúc dòng để dễ đọc."
+        contents = [prompt, image]
+        
+        errors: list[AttemptError] = []
+        for model in MODELS:
+            for key_name, api_key in keys:
+                try:
+                    return self._generate(model, api_key, contents)
+                except Exception as exc:
+                    errors.append(AttemptError(model, key_name, str(exc)))
+
+        detail = "\n".join(
+            f"- {error.model} with {error.key_name}: {error.message}" for error in errors
+        )
+        raise RuntimeError(f"Tất cả model/key Gemini đều thất bại khi quét OCR ảnh:\n{detail}")
+
     def extract_from_image(self, image: Image.Image) -> list[dict[str, Any]]:
-        prompt = build_extraction_prompt("image")
-        return self._extract([prompt, image])
+        raw_text = self._ocr_image(image)
+        return self.extract_from_text(raw_text)
 
     def _extract(self, contents: list[Any]) -> list[dict[str, Any]]:
         keys = self._available_keys()

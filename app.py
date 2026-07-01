@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import pandas as pd
 import streamlit as st
 from PIL import Image
@@ -14,6 +15,7 @@ from services.database import (
     User,
     Vocabulary,
     add_vocabulary,
+    check_vocabulary_exists,
     create_deck,
     due_vocabulary,
     get_decks,
@@ -215,22 +217,24 @@ def deck_selector(session, user_id: int, key: str, label: str = "Chủ đề") -
 
 
 def vocabulary_frame(session, deck_id: int, search: str = "") -> pd.DataFrame:
-    statement = select(Vocabulary).where(Vocabulary.deck_id == deck_id).order_by(Vocabulary.created_at.desc())
+    statement = select(Vocabulary).where(Vocabulary.deck_id == deck_id).order_by(Vocabulary.created_at.asc(), Vocabulary.id.asc())
     rows = session.scalars(statement).all()
     frame = pd.DataFrame(
         [
             {
-                "id": row.id,
+                "db_id": row.id,
+                "id": index + 1,
                 "word": row.word,
                 "meaning": row.meaning,
                 "example": row.example,
                 "note": row.note,
             }
-            for row in rows
+            for index, row in enumerate(rows)
         ]
     )
     if search and not frame.empty:
-        mask = frame.astype(str).apply(lambda col: col.str.contains(search, case=False, na=False)).any(axis=1)
+        search_cols = ["word", "meaning", "example", "note"]
+        mask = frame[search_cols].astype(str).apply(lambda col: col.str.contains(search, case=False, na=False)).any(axis=1)
         frame = frame[mask]
     return frame
 
@@ -246,15 +250,22 @@ def form_input_ui(session, deck: Deck) -> None:
         submitted = st.form_submit_button("Thêm từ vựng")
 
     if submitted:
-        if not word.strip() or not meaning.strip():
+        word_clean = word.strip()
+        meaning_clean = meaning.strip()
+        if not word_clean or not meaning_clean:
             st.warning("Vui lòng nhập ít nhất từ và nghĩa.")
             return
+        
+        if check_vocabulary_exists(session, deck.id, word_clean):
+            st.warning(f"Từ '{word_clean}' đã tồn tại trong chủ đề '{deck.name}'.")
+            return
+
         add_vocabulary(
             session,
             deck.id,
             {
-                "word": word.strip(),
-                "meaning": meaning.strip(),
+                "word": word_clean,
+                "meaning": meaning_clean,
                 "example": example.strip(),
                 "note": note.strip(),
             },
@@ -507,10 +518,20 @@ def ai_import_ui(session, deck: Deck) -> None:
         edited["language"] = deck.language
         rows = valid_import_rows(edited)
         if st.button("Nhập các dòng đã chọn"):
+            added_count = 0
+            skipped_words = []
             for row in rows:
-                add_vocabulary(session, deck.id, row)
+                word_clean = row["word"].strip()
+                if check_vocabulary_exists(session, deck.id, word_clean):
+                    skipped_words.append(word_clean)
+                else:
+                    add_vocabulary(session, deck.id, row)
+                    added_count += 1
             st.session_state.pop("ai_preview", None)
-            st.success(f"Đã nhập {len(rows)} dòng.")
+            if added_count > 0:
+                st.success(f"Đã nhập thành công {added_count} từ.")
+            if skipped_words:
+                st.warning(f"Bỏ qua {len(skipped_words)} từ đã tồn tại: {', '.join(skipped_words)}")
             rerun()
 
 
@@ -553,7 +574,8 @@ def word_list_screen() -> None:
 
         search = st.text_input("Tìm kiếm trong chủ đề")
         frame = vocabulary_frame(session, deck.id, search)
-        st.dataframe(localized_frame(frame), hide_index=True, use_container_width=True)
+        display_frame = frame.drop(columns=["db_id"]) if "db_id" in frame.columns else frame
+        st.dataframe(localized_frame(display_frame), hide_index=True, use_container_width=True)
 
         if frame.empty:
             return
@@ -561,8 +583,8 @@ def word_list_screen() -> None:
         st.subheader("Sửa hoặc xóa từ")
         vocab_id = st.selectbox(
             "Chọn từ",
-            frame["id"].tolist(),
-            format_func=lambda item_id: frame.loc[frame["id"] == item_id, "word"].iloc[0],
+            frame["db_id"].tolist(),
+            format_func=lambda d_id: f"{frame.loc[frame['db_id'] == d_id, 'id'].iloc[0]}. {frame.loc[frame['db_id'] == d_id, 'word'].iloc[0]}",
         )
         vocab = session.get(Vocabulary, int(vocab_id))
         if vocab is None:
@@ -653,61 +675,92 @@ def quiz_screen() -> None:
     assert user is not None
     st.title("Quiz")
 
+    # Check if a quiz session is active
+    quiz = st.session_state.get("quiz")
+    is_active = quiz and "cards" in quiz and quiz["index"] < len(quiz["cards"])
+
     with SessionLocal() as session:
-        deck = deck_selector(session, user["id"], key="quiz_deck_id", label="Chủ đề")
-        if deck is None:
+        if not is_active:
+            # Show configuration UI
+            deck = deck_selector(session, user["id"], key="quiz_deck_id", label="Chủ đề")
+            if deck is None:
+                return
+
+            question_count = st.number_input("Số câu hỏi", min_value=1, max_value=100, value=20)
+            if st.button("Bắt đầu quiz"):
+                cards = due_vocabulary(session, deck.id, int(question_count))
+                if not cards:
+                    st.info("Hiện chưa có thẻ nào đến hạn ôn.")
+                else:
+                    st.session_state.quiz = {
+                        "deck_language": deck.language,
+                        "cards": [
+                            {
+                                "id": card.id,
+                                "word": card.word,
+                                "meaning": card.meaning,
+                                "example": card.example,
+                                "note": card.note,
+                                "reversed": random.choice([True, False]),
+                            }
+                            for card in cards
+                        ],
+                        "index": 0,
+                        "show_answer": False,
+                    }
+                    rerun()
+            
+            # If quiz is finished, show completion screen
+            if quiz and quiz.get("cards") and quiz["index"] >= len(quiz["cards"]):
+                st.success("Đã hoàn thành lượt quiz.")
+                if st.button("Xóa lượt quiz"):
+                    st.session_state.pop("quiz", None)
+                    rerun()
             return
 
-        question_count = st.number_input("Số câu hỏi", min_value=1, max_value=100, value=20)
-        if st.button("Bắt đầu quiz"):
-            cards = due_vocabulary(session, deck.id, int(question_count))
-            st.session_state.quiz = {
-                "cards": [card.id for card in cards],
-                "index": 0,
-                "show_answer": False,
-            }
-            if not cards:
-                st.info("Hiện chưa có thẻ nào đến hạn ôn.")
-            else:
-                rerun()
+        # Active quiz UI - NO database reads here except on answer submission
+        card = quiz["cards"][quiz["index"]]
+        
+        # Randomize/Reverse direction logic
+        if card["reversed"]:
+            front_text = card["meaning"]
+            caption = f"Dịch sang {quiz['deck_language']}"
+            back_text = card["word"]
+        else:
+            front_text = card["word"]
+            caption = quiz['deck_language']
+            back_text = card["meaning"]
 
-        quiz = st.session_state.get("quiz")
-        if not quiz or not quiz.get("cards"):
-            return
-
-        if quiz["index"] >= len(quiz["cards"]):
-            st.success("Đã hoàn thành lượt quiz.")
-            if st.button("Xóa lượt quiz"):
+        col_header, col_cancel = st.columns([6, 1])
+        with col_header:
+            st.caption(f"Câu {quiz['index'] + 1} / {len(quiz['cards'])}")
+        with col_cancel:
+            if st.button("Hủy quiz", use_container_width=True):
                 st.session_state.pop("quiz", None)
                 rerun()
-            return
 
-        vocab = session.get(Vocabulary, quiz["cards"][quiz["index"]])
-        if vocab is None:
-            quiz["index"] += 1
-            rerun()
-
-        st.caption(f"Câu {quiz['index'] + 1} / {len(quiz['cards'])}")
         st.markdown(
             f"""
             <div style='border:1px solid rgba(128, 128, 128, 0.2); border-radius:8px; padding:32px; text-align:center; background-color: var(--secondary-background-color);'>
-                <div style='font-size:48px; font-weight:700; color: var(--text-color);'>{vocab.word}</div>
-                <div style='margin-top:8px; color: var(--text-color); opacity: 0.7;'>{deck.language}</div>
+                <div style='font-size:48px; font-weight:700; color: var(--text-color);'>{front_text}</div>
+                <div style='margin-top:8px; color: var(--text-color); opacity: 0.7;'>{caption}</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
         if not quiz["show_answer"]:
             if st.button("Hiện đáp án", use_container_width=True):
                 quiz["show_answer"] = True
                 rerun()
             return
 
-        st.markdown(f"### {vocab.meaning}")
-        if vocab.example:
-            st.write(vocab.example)
-        if vocab.note:
-            st.info(vocab.note)
+        # Back of card (Answer reveal)
+        st.markdown(f"### {back_text}")
+        if card["example"]:
+            st.write(card["example"])
+        if card["note"]:
+            st.info(card["note"])
 
         left, middle, right = st.columns(3)
         actions = [
@@ -717,7 +770,7 @@ def quiz_screen() -> None:
         ]
         for column, label, result in actions:
             if column.button(label, use_container_width=True):
-                update_schedule(session, vocab.id, result)
+                update_schedule(session, card["id"], result)
                 quiz["index"] += 1
                 quiz["show_answer"] = False
                 rerun()
@@ -774,7 +827,7 @@ def hdsd_screen() -> None:
         st.info(
             """
             **Chu kỳ ôn tập:**
-            1. **😵 Chưa nhớ**: Xem lại sau **15 phút**.
+            1. **😵 Chưa nhớ**: Xem lại sau **5 phút**.
             2. **🤔 Nhớ sơ sơ**: Xem lại sau **2 giờ**.
             3. **😄 Nhớ rồi**: Chu kỳ giãn cách tăng dần: **7 ngày ➜ 14 ngày ➜ 30 ngày ➜ 60 ngày ➜ 90 ngày**.
             """

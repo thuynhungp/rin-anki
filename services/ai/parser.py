@@ -34,21 +34,31 @@ def parse_vocabulary_json(raw: str) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     for index, item in enumerate(data, start=1):
         if not isinstance(item, dict):
-            raise AIParseError(f"Dòng {index} không phải object.")
+            continue
 
-        language = str(item.get("language", "")).strip().upper()
-        if language not in LANGUAGES:
-            raise AIParseError(f"Dòng {index} có ngôn ngữ chưa hỗ trợ: '{language}'.")
+        raw_lang = str(item.get("language", "")).strip().upper()
+        if raw_lang in ("KO", "KOR"):
+            language = "KR"
+        elif raw_lang in ("EN", "ENG"):
+            language = "EN"
+        elif raw_lang in ("JP", "JPN", "JA"):
+            language = "JP"
+        elif raw_lang in ("CN", "CHI", "ZH"):
+            language = "CN"
+        else:
+            language = raw_lang if raw_lang in LANGUAGES else "EN"
 
-        word = str(item.get("word", "")).strip()
-        meaning = str(item.get("meaning", "")).strip()
-        if not word or not meaning:
-            raise AIParseError(f"Dòng {index} phải có từ và nghĩa.")
+        word = str(item.get("word", "") or "").strip()
+        meaning = str(item.get("meaning", "") or "").strip()
+        
+        # Skip completely empty rows
+        if not word and not meaning:
+            continue
 
         try:
-            confidence = float(item.get("confidence", 0))
-        except (TypeError, ValueError) as exc:
-            raise AIParseError(f"Dòng {index} có độ tin cậy không hợp lệ.") from exc
+            confidence = float(item.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            confidence = 0.5
 
         entries.append(
             {
