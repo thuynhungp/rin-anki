@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import sys
+# Clear cached local services modules to force Streamlit Cloud to reload them when app.py runs
+for mod in list(sys.modules.keys()):
+    if mod.startswith("services.") or mod == "services":
+        sys.modules.pop(mod, None)
+
 import random
 import pandas as pd
 import streamlit as st
