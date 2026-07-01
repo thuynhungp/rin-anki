@@ -962,9 +962,9 @@ def grammar_notes_screen() -> None:
                 
                 col_ed, col_prev = st.columns(2, gap="large")
                 with col_ed:
-                    st.session_state.new_note_title = st.text_input("Tiêu đề ghi chú", value=st.session_state.new_note_title)
+                    st.text_input("Tiêu đề ghi chú", key="new_note_title")
                     render_markdown_toolbar("new_note_content")
-                    st.session_state.new_note_content = st.text_area("Nội dung (Markdown)", value=st.session_state.new_note_content, height=450)
+                    st.text_area("Nội dung (Markdown)", key="new_note_content", height=450)
                 
                 with col_prev:
                     col_p_title, col_p_btn = st.columns([2, 1], vertical_alignment="center")
@@ -976,11 +976,14 @@ def grammar_notes_screen() -> None:
                             st.session_state.new_note_preview_content = st.session_state.new_note_content
                             st.rerun()
                     with st.container(border=True):
-                        title_val = st.session_state.get("new_note_preview_title", st.session_state.new_note_title)
-                        content_val = st.session_state.get("new_note_preview_content", st.session_state.new_note_content)
-                        st.markdown(f"## {title_val}")
-                        st.markdown("---")
-                        st.markdown(content_val)
+                        title_val = st.session_state.get("new_note_preview_title", "")
+                        content_val = st.session_state.get("new_note_preview_content", "")
+                        if not title_val and not content_val:
+                            st.info("Nhấn 'Cập nhật xem trước' để hiển thị bản xem trước.")
+                        else:
+                            st.markdown(f"## {title_val}", unsafe_allow_html=True)
+                            st.markdown("---")
+                            st.markdown(content_val, unsafe_allow_html=True)
                 
                 left_btn, right_btn = st.columns(2)
                 if left_btn.button("Lưu ghi chú", use_container_width=True):
@@ -992,11 +995,15 @@ def grammar_notes_screen() -> None:
                         # Reset states
                         st.session_state.new_note_title = ""
                         st.session_state.new_note_content = ""
+                        st.session_state.pop("new_note_preview_title", None)
+                        st.session_state.pop("new_note_preview_content", None)
                         st.session_state.pop("pasted_note_image_base64", None)
                         st.rerun()
                 if right_btn.button("Hủy bỏ", use_container_width=True):
                     st.session_state.new_note_title = ""
                     st.session_state.new_note_content = ""
+                    st.session_state.pop("new_note_preview_title", None)
+                    st.session_state.pop("new_note_preview_content", None)
                     st.session_state.pop("pasted_note_image_base64", None)
                     st.rerun()
 
@@ -1021,9 +1028,9 @@ def grammar_notes_screen() -> None:
                     
                     col_edit_l, col_edit_r = st.columns(2, gap="large")
                     with col_edit_l:
-                        st.session_state.edit_note_title = st.text_input("Tiêu đề", value=st.session_state.edit_note_title)
+                        st.text_input("Tiêu đề", key="edit_note_title")
                         render_markdown_toolbar("edit_note_content")
-                        st.session_state.edit_note_content = st.text_area("Nội dung", value=st.session_state.edit_note_content, height=450)
+                        st.text_area("Nội dung", key="edit_note_content", height=450)
                     with col_edit_r:
                         col_p_title, col_p_btn = st.columns([2, 1], vertical_alignment="center")
                         with col_p_title:
@@ -1034,11 +1041,14 @@ def grammar_notes_screen() -> None:
                                 st.session_state.edit_note_preview_content = st.session_state.edit_note_content
                                 st.rerun()
                         with st.container(border=True):
-                            title_val = st.session_state.get("edit_note_preview_title", st.session_state.edit_note_title)
-                            content_val = st.session_state.get("edit_note_preview_content", st.session_state.edit_note_content)
-                            st.markdown(f"## {title_val}")
-                            st.markdown("---")
-                            st.markdown(content_val)
+                            title_val = st.session_state.get("edit_note_preview_title", "")
+                            content_val = st.session_state.get("edit_note_preview_content", "")
+                            if not title_val and not content_val:
+                                st.info("Nhấn 'Cập nhật xem trước' để hiển thị bản xem trước.")
+                            else:
+                                st.markdown(f"## {title_val}", unsafe_allow_html=True)
+                                st.markdown("---")
+                                st.markdown(content_val, unsafe_allow_html=True)
                     
                     btn_save, btn_cancel = st.columns(2)
                     if btn_save.button("Lưu thay đổi", key="save_edit_note_btn", use_container_width=True):
@@ -1048,19 +1058,23 @@ def grammar_notes_screen() -> None:
                             update_grammar_note(session, selected_note.id, st.session_state.edit_note_title, st.session_state.edit_note_content)
                             st.success("Đã cập nhật thay đổi thành công!")
                             st.session_state.pop("edit_note_id", None)
+                            st.session_state.pop("edit_note_preview_title", None)
+                            st.session_state.pop("edit_note_preview_content", None)
                             st.rerun()
                     if btn_cancel.button("Hủy sửa", key="cancel_edit_note_btn", use_container_width=True):
                         st.session_state.pop("edit_note_id", None)
+                        st.session_state.pop("edit_note_preview_title", None)
+                        st.session_state.pop("edit_note_preview_content", None)
                         st.rerun()
 
                 else:
                     # View mode
                     st.write("---")
                     with st.container(border=True):
-                        st.markdown(f"## {selected_note.title}")
+                        st.markdown(f"## {selected_note.title}", unsafe_allow_html=True)
                         st.caption(f"Ngày lưu: {selected_note.created_at.strftime('%d/%m/%Y %H:%M:%S')}")
                         st.markdown("---")
-                        st.markdown(selected_note.content)
+                        st.markdown(selected_note.content, unsafe_allow_html=True)
 
                     col_actions = st.columns([1, 1, 4])
                     if col_actions[0].button("Sửa ghi chú", use_container_width=True):
