@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import libsql
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from dotenv import load_dotenv
@@ -40,6 +41,7 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     theme: Mapped[str] = mapped_column(String(50), nullable=False, default="Dịu mắt")
     decks: Mapped[list["Deck"]] = relationship(back_populates="user", cascade="all, delete")
+    grammar_notes: Mapped[list["GrammarNote"]] = relationship(back_populates="user", cascade="all, delete")
 
 
 class Deck(Base):
@@ -64,9 +66,23 @@ class Vocabulary(Base):
     meaning: Mapped[str] = mapped_column(Text, nullable=False)
     example: Mapped[str] = mapped_column(Text, default="")
     note: Mapped[str] = mapped_column(Text, default="")
+    conjugations: Mapped[str | None] = mapped_column(Text, nullable=True, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: now_utc())
     deck: Mapped[Deck] = relationship(back_populates="vocabulary")
     progress: Mapped["Progress"] = relationship(back_populates="vocabulary", cascade="all, delete", uselist=False)
+
+    @property
+    def conjugation_data(self) -> dict[str, str]:
+        if not self.conjugations:
+            return {}
+        try:
+            return json.loads(self.conjugations)
+        except Exception:
+            return {}
+
+    @conjugation_data.setter
+    def conjugation_data(self, value: dict[str, str]) -> None:
+        self.conjugations = json.dumps(value, ensure_ascii=False)
 
 
 class Progress(Base):
@@ -127,6 +143,10 @@ def init_db() -> None:
         columns_users = {row[1] for row in connection.execute(text("PRAGMA table_info(users)"))}
         if "theme" not in columns_users:
             connection.execute(text("ALTER TABLE users ADD COLUMN theme VARCHAR(50) NOT NULL DEFAULT 'Dịu mắt'"))
+
+        columns_vocab = {row[1] for row in connection.execute(text("PRAGMA table_info(vocabulary)"))}
+        if "conjugations" not in columns_vocab:
+            connection.execute(text("ALTER TABLE vocabulary ADD COLUMN conjugations TEXT DEFAULT '{}'"))
 
     with SessionLocal() as session:
         for name in USERS:
@@ -225,3 +245,51 @@ def due_vocabulary(session: Session, deck_id: int, limit: int) -> list[Vocabular
         .limit(limit)
     )
     return list(session.scalars(statement))
+
+
+class GrammarNote(Base):
+    __tablename__ = "grammar_notes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: now_utc())
+
+    user: Mapped[User] = relationship(back_populates="grammar_notes")
+
+
+def get_grammar_notes(session: Session, user_id: int, search: str = "") -> list[GrammarNote]:
+    from sqlalchemy import func
+    statement = select(GrammarNote).where(GrammarNote.user_id == user_id)
+    if search:
+        search_stripped = f"%{search.strip().lower()}%"
+        statement = statement.where(
+            (func.lower(GrammarNote.title).like(search_stripped)) |
+            (func.lower(GrammarNote.content).like(search_stripped))
+        )
+    statement = statement.order_by(GrammarNote.created_at.desc(), GrammarNote.id.desc())
+    return list(session.scalars(statement))
+
+
+def create_grammar_note(session: Session, user_id: int, title: str, content: str) -> GrammarNote:
+    note = GrammarNote(user_id=user_id, title=title.strip(), content=content)
+    session.add(note)
+    session.commit()
+    return note
+
+
+def update_grammar_note(session: Session, note_id: int, title: str, content: str) -> None:
+    note = session.get(GrammarNote, note_id)
+    if note:
+        note.title = title.strip()
+        note.content = content
+        session.commit()
+
+
+def delete_grammar_note(session: Session, note_id: int) -> None:
+    note = session.get(GrammarNote, note_id)
+    if note:
+        session.delete(note)
+        session.commit()
+

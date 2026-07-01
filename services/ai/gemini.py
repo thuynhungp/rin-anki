@@ -93,3 +93,89 @@ class GeminiVocabularyExtractor:
             f"- {error.model} with {error.key_name}: {error.message}" for error in errors
         )
         raise RuntimeError(f"Tất cả model/key Gemini đều thất bại:\n{detail}")
+
+    def conjugate_korean_words(self, words: list[str]) -> list[dict[str, str]]:
+        if not words:
+            return []
+            
+        keys = self._available_keys()
+        if not keys:
+            raise RuntimeError("Chưa tìm thấy Gemini API key. Hãy thêm key vào file .env trước.")
+
+        import json
+        p1 = "Bạn là một chuyên gia ngôn ngữ tiếng Hàn. Hãy chia các từ tiếng Hàn sau đây sang 3 dạng:\n"
+        p2 = "1. Dạng thân mật/đời thường \"아/어/여\" (ví dụ: động từ ăn là 먹다 -> ăn: 먹어, đi là 가다 -> đi: 가).\n"
+        p3 = "2. Dạng định ngữ \"은/는\" (ví dụ: động từ ăn là 먹다 -> định ngữ là 먹는, đi là 가다 -> định ngữ là 가는; tính từ đẹp là 예쁘다 -> định ngữ là 예쁜).\n"
+        p4 = "3. Dạng nguyên nhân \"(으)니까\" (ví dụ: động từ ăn là 먹다 -> 먹으니까, đi là 가다 -> 가니까).\n\n"
+        p5 = (
+            "Quy tắc:\n"
+            "- Chỉ trả về duy nhất một mảng JSON. Không Markdown, không giải thích gì thêm.\n"
+            "- Với mỗi từ, nếu không chia được, điền dạng chia là chuỗi rỗng \"\".\n"
+            "- Định dạng mảng JSON phải đúng như sau:\n"
+            "[\n"
+            "  {\n"
+            "    \"word\": \"từ_gốc\",\n"
+            "    \"a_eo_yeo\": \"dạng_chia_1\",\n"
+            "    \"eun_neun\": \"dạng_chia_2\",\n"
+            "    \"eu_ni_kka\": \"dạng_chia_3\"\n"
+            "  }\n"
+            "]\n\n"
+            "Danh sách từ cần chia:\n"
+        )
+        prompt = p1 + p2 + p3 + p4 + p5 + json.dumps(words, ensure_ascii=False)
+        contents = [prompt]
+        errors = []
+        for model in MODELS:
+            for key_name, api_key in keys:
+                try:
+                    raw = self._generate(model, api_key, contents)
+                    cleaned = raw.strip()
+                    if cleaned.startswith("```"):
+                        import re
+                        cleaned = re.sub(r"^```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
+                        cleaned = re.sub(r"```$", "", cleaned).strip()
+                    import re
+                    match = re.search(r"\[[\s\S]*\]", cleaned)
+                    if not match:
+                        raise ValueError("Không tìm thấy mảng JSON trong phản hồi.")
+                    data = json.loads(match.group(0))
+                    if not isinstance(data, list):
+                        raise ValueError("Phản hồi không phải là một mảng JSON.")
+                    return data
+                except Exception as exc:
+                    errors.append(AttemptError(model, key_name, str(exc)))
+        detail = "\n".join(
+            f"- {error.model} with {error.key_name}: {error.message}" for error in errors
+        )
+        raise RuntimeError(f"Tất cả model/key Gemini đều thất bại khi chia động từ:\n{detail}")
+
+    def extract_grammar_note(self, image: Image.Image) -> str:
+        keys = self._available_keys()
+        if not keys:
+            raise RuntimeError("Chưa tìm thấy Gemini API key. Hãy thêm key vào file .env trước.")
+
+        prompt = """
+Bạn là một trợ lý AI học tập xuất sắc. Hãy đọc hình ảnh ghi chú viết tay này và trích xuất nội dung thành định dạng Markdown sạch đẹp.
+
+Quy tắc định dạng:
+1. Giữ nguyên cấu trúc phân cấp (dùng tiêu đề Markdown thích hợp #, ## hoặc ### cho các phần).
+2. Tự động nhận diện các điểm ngữ pháp cấu trúc, công thức, quy tắc hoặc ví dụ quan trọng và định dạng chúng nổi bật:
+   - Dùng chữ in đậm (**chữ**) cho cấu trúc ngữ pháp chính hoặc từ khóa quan trọng.
+   - Dùng thẻ highlight (<mark>chữ</mark>) để làm nổi bật các phần lưu ý quan trọng, quy tắc bất quy tắc hoặc thông tin cốt lõi cần ghi nhớ.
+3. Bảo toàn tối đa nội dung ghi chú gốc, dịch hoặc giữ nguyên phần giải thích nếu có.
+4. Trả về trực tiếp nội dung dưới dạng Markdown, không bao quanh bằng khối code ```markdown.
+"""
+        contents = [prompt, image]
+        errors: list[AttemptError] = []
+        for model in MODELS:
+            for key_name, api_key in keys:
+                try:
+                    return self._generate(model, api_key, contents)
+                except Exception as exc:
+                    errors.append(AttemptError(model, key_name, str(exc)))
+
+        detail = "\n".join(
+            f"- {error.model} with {error.key_name}: {error.message}" for error in errors
+        )
+        raise RuntimeError(f"Tất cả model/key Gemini đều thất bại khi quét OCR ghi chú ngữ pháp:\n{detail}")
+

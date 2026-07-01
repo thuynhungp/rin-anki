@@ -14,6 +14,7 @@ from services.database import (
     SessionLocal,
     User,
     Vocabulary,
+    GrammarNote,
     add_vocabulary,
     check_vocabulary_exists,
     create_deck,
@@ -22,6 +23,10 @@ from services.database import (
     get_users,
     init_db,
     update_schedule,
+    get_grammar_notes,
+    create_grammar_note,
+    update_grammar_note,
+    delete_grammar_note,
 )
 
 st.set_page_config(page_title="Rin Anki", page_icon="📚", layout="wide")
@@ -135,7 +140,7 @@ def get_allowed_languages(user_name: str) -> list[str]:
     return LANGUAGES
 
 
-MENU_ITEMS = ["Thêm từ vựng", "Danh sách từ", "Chủ đề", "Quiz", "HDSD"]
+MENU_ITEMS = ["Thêm từ vựng", "Danh sách từ", "Chủ đề", "Ghi chú ngữ pháp", "Quiz", "HDSD"]
 USER_DISPLAY_NAMES = {"Rin": "Rin", "Friend": "Châu"}
 VOCABULARY_COLUMN_LABELS = {
     "id": "ID",
@@ -143,6 +148,9 @@ VOCABULARY_COLUMN_LABELS = {
     "meaning": "Nghĩa",
     "example": "Ví dụ",
     "note": "Ghi chú",
+    "conjugation_a_eo_yeo": "아/어/여",
+    "conjugation_eun_neun": "은/n는",
+    "conjugation_eu_ni_kka": "(으)니까",
 }
 
 
@@ -219,24 +227,38 @@ def deck_selector(session, user_id: int, key: str, label: str = "Chủ đề") -
 def vocabulary_frame(session, deck_id: int, search: str = "") -> pd.DataFrame:
     statement = select(Vocabulary).where(Vocabulary.deck_id == deck_id).order_by(Vocabulary.created_at.asc(), Vocabulary.id.asc())
     rows = session.scalars(statement).all()
-    frame = pd.DataFrame(
-        [
-            {
-                "db_id": row.id,
-                "id": index + 1,
-                "word": row.word,
-                "meaning": row.meaning,
-                "example": row.example,
-                "note": row.note,
-            }
-            for index, row in enumerate(rows)
-        ]
-    )
+    
+    deck = session.get(Deck, deck_id)
+    is_kr = deck is not None and deck.language == "KR"
+    
+    frame_data = []
+    for index, row in enumerate(rows):
+        item = {
+            "db_id": row.id,
+            "id": index + 1,
+            "word": row.word,
+            "meaning": row.meaning,
+            "example": row.example,
+            "note": row.note,
+        }
+        if is_kr:
+            conj = row.conjugation_data
+            item["conjugation_a_eo_yeo"] = conj.get("a_eo_yeo", "")
+            item["conjugation_eun_neun"] = conj.get("eun_neun", "")
+            item["conjugation_eu_ni_kka"] = conj.get("eu_ni_kka", "")
+        frame_data.append(item)
+        
+    frame = pd.DataFrame(frame_data)
+    
     if search and not frame.empty:
         search_cols = ["word", "meaning", "example", "note"]
+        if is_kr:
+            search_cols.extend(["conjugation_a_eo_yeo", "conjugation_eun_neun", "conjugation_eu_ni_kka"])
+        search_cols = [c for c in search_cols if c in frame.columns]
         mask = frame[search_cols].astype(str).apply(lambda col: col.str.contains(search, case=False, na=False)).any(axis=1)
         frame = frame[mask]
     return frame
+
 
 
 def form_input_ui(session, deck: Deck) -> None:
@@ -573,6 +595,67 @@ def word_list_screen() -> None:
             return
 
         search = st.text_input("Tìm kiếm trong chủ đề")
+        
+        # Smart conjugation check and bulk update UI for Korean decks
+        if deck.language == "KR":
+            all_vocabs = deck.vocabulary
+            unconjugated_vocabs = []
+            for vocab in all_vocabs:
+                word = vocab.word.strip()
+                if word.endswith("다"):
+                    conj = vocab.conjugation_data
+                    if not conj or not conj.get("a_eo_yeo") or not conj.get("eun_neun") or not conj.get("eu_ni_kka"):
+                        unconjugated_vocabs.append(vocab)
+            
+            if all_vocabs:
+                col_bulk_left, col_bulk_right = st.columns([3, 1], vertical_alignment="center")
+                with col_bulk_left:
+                    st.info(f"Có {len(unconjugated_vocabs)} động từ/tính từ tiếng Hàn chưa chia động từ (trong tổng số {len(all_vocabs)} từ).")
+                with col_bulk_right:
+                    overwrite = st.checkbox("Ghi đè từ đã chia", value=False)
+                
+                if st.button("Tự động chia động từ (AI)", use_container_width=True):
+                    to_conjugate = all_vocabs if overwrite else unconjugated_vocabs
+                    # Filter: only words ending in "다" (Korean verbs/adjectives)
+                    to_conjugate = [v for v in to_conjugate if v.word.strip().endswith("다")]
+                    
+                    if not to_conjugate:
+                        st.info("Không có động từ/tính từ nào cần chia.")
+                    else:
+                        with st.spinner("Đang chia động từ bằng AI..."):
+                            words_to_query = [v.word.strip() for v in to_conjugate]
+                            
+                            # Call Gemini in batches of 50
+                            batch_size = 50
+                            results = []
+                            extractor = GeminiVocabularyExtractor()
+                            for i in range(0, len(words_to_query), batch_size):
+                                batch = words_to_query[i:i+batch_size]
+                                try:
+                                    batch_results = extractor.conjugate_korean_words(batch)
+                                    results.extend(batch_results)
+                                except Exception as e:
+                                    st.error(f"Lỗi khi chia động từ: {e}")
+                                    break
+                            
+                            # Match results to database
+                            updated_count = 0
+                            result_map = {res["word"]: res for res in results if "word" in res}
+                            for vocab in to_conjugate:
+                                w = vocab.word.strip()
+                                if w in result_map:
+                                    res = result_map[w]
+                                    vocab.conjugation_data = {
+                                        "a_eo_yeo": res.get("a_eo_yeo") or "",
+                                        "eun_neun": res.get("eun_neun") or "",
+                                        "eu_ni_kka": res.get("eu_ni_kka") or "",
+                                    }
+                                    updated_count += 1
+                            
+                            session.commit()
+                            st.success(f"Đã cập nhật thành công {updated_count} từ!")
+                            rerun()
+
         frame = vocabulary_frame(session, deck.id, search)
         display_frame = frame.drop(columns=["db_id"]) if "db_id" in frame.columns else frame
         st.dataframe(localized_frame(display_frame), hide_index=True, use_container_width=True)
@@ -595,6 +678,14 @@ def word_list_screen() -> None:
             meaning = st.text_input("Nghĩa", value=vocab.meaning)
             example = st.text_area("Ví dụ", value=vocab.example)
             note = st.text_area("Ghi chú", value=vocab.note)
+            
+            # Show and edit conjugation forms for Korean deck
+            if deck.language == "KR":
+                conj = vocab.conjugation_data
+                c_a_eo_yeo = st.text_input("아/어/여", value=conj.get("a_eo_yeo", ""))
+                c_eun_neun = st.text_input("은/는", value=conj.get("eun_neun", ""))
+                c_eu_ni_kka = st.text_input("(으)니까", value=conj.get("eu_ni_kka", ""))
+                
             save, delete_word = st.columns(2)
             should_save = save.form_submit_button("Lưu")
             should_delete = delete_word.form_submit_button("Xóa")
@@ -605,6 +696,12 @@ def word_list_screen() -> None:
             vocab.meaning = meaning.strip()
             vocab.example = example.strip()
             vocab.note = note.strip()
+            if deck.language == "KR":
+                vocab.conjugation_data = {
+                    "a_eo_yeo": c_a_eo_yeo.strip(),
+                    "eun_neun": c_eun_neun.strip(),
+                    "eu_ni_kka": c_eu_ni_kka.strip(),
+                }
             session.commit()
             st.success("Đã lưu thay đổi.")
             rerun()
@@ -613,6 +710,7 @@ def word_list_screen() -> None:
             session.commit()
             st.success("Đã xóa từ.")
             rerun()
+
 
 
 def topic_screen() -> None:
@@ -670,6 +768,295 @@ def topic_screen() -> None:
             rerun()
 
 
+def render_markdown_toolbar(content_key: str):
+    st.caption("Chèn nhanh cú pháp Markdown:")
+    cols = st.columns(8)
+    tags = [
+        ("Tiêu đề 1", "# "),
+        ("Tiêu đề 2", "## "),
+        ("In đậm", "**chữ in đậm**"),
+        ("In nghiêng", "*chữ in nghiêng*"),
+        ("Highlight", "<mark>nội dung nổi bật</mark>"),
+        ("Danh sách", "\n- Mục 1\n- Mục 2\n"),
+        ("Bảng", "\n| Cột 1 | Cột 2 |\n|---|---|\n| Ô 1 | Ô 2 |\n"),
+        ("Hộp lưu ý", "\n> [!NOTE]\n> Nội dung lưu ý ở đây\n"),
+    ]
+    for index, (label, snippet) in enumerate(tags):
+        if cols[index % 8].button(label, key=f"btn_tag_{content_key}_{index}", use_container_width=True):
+            current_val = st.session_state.get(content_key, "")
+            st.session_state[content_key] = current_val + snippet
+            st.rerun()
+
+
+def grammar_notes_screen() -> None:
+    user = current_user()
+    assert user is not None
+    st.title("📚 Ghi chú ngữ pháp")
+
+    tab_new, tab_search = st.tabs(["📝 Ghi chú mới", "🔍 Tìm kiếm ghi chú"])
+
+    with SessionLocal() as session:
+        # --- TAB 1: NEW NOTE ---
+        with tab_new:
+            st.subheader("Tạo ghi chú ngữ pháp mới")
+            mode = st.radio("Cách thêm ghi chú", ["Quét từ ảnh chụp", "Tự nhập tay"], horizontal=True, key="note_input_mode")
+
+            # Helper states
+            if "new_note_title" not in st.session_state:
+                st.session_state.new_note_title = ""
+            if "new_note_content" not in st.session_state:
+                st.session_state.new_note_content = ""
+
+            if mode == "Quét từ ảnh chụp":
+                # Clipboard paste handling for notes
+                if st.session_state.get("clear_pasted_note"):
+                    st.session_state.pasted_note_image_base64 = ""
+                    st.session_state.clear_pasted_note = False
+
+                st.markdown(
+                    """
+                    <style>
+                    .st-key-pasted_note_image_base64 {
+                        display: none !important;
+                    }
+                    </style>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                pasted_note_base64 = st.text_area("Pasted Note Base64", key="pasted_note_image_base64")
+
+                col_u, col_p = st.columns(2, vertical_alignment="bottom")
+                with col_u:
+                    uploaded_note_img = st.file_uploader("Tải ảnh ghi chú lên", type=["jpg", "jpeg", "png", "webp"], key="upload_note_img")
+                with col_p:
+                    st.components.v1.html(
+                        """
+                        <style>
+                            html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+                        </style>
+                        <div id="paste-zone-note" tabindex="0" style="
+                            border: 2px dashed rgba(128, 128, 128, 0.4);
+                            border-radius: 8px;
+                            padding: 16px 12px;
+                            text-align: center;
+                            color: var(--text-color, #2D2A26);
+                            background-color: var(--secondary-background-color, #EFECE6);
+                            cursor: pointer;
+                            font-family: sans-serif;
+                            font-size: 14px;
+                            font-weight: 500;
+                            outline: none;
+                            transition: border-color 0.2s;
+                            height: 100%;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            box-sizing: border-box;
+                        ">
+                            📋 Bấm vào đây & nhấn Ctrl + V để dán ảnh ghi chú
+                        </div>
+                        <script>
+                            const zone = document.getElementById('paste-zone-note');
+                            try {
+                                const parentStyle = window.parent.getComputedStyle(window.parent.document.body);
+                                zone.style.color = parentStyle.getPropertyValue('--text-color');
+                                zone.style.backgroundColor = parentStyle.getPropertyValue('--secondary-background-color');
+                                zone.addEventListener('focus', () => { zone.style.borderColor = parentStyle.getPropertyValue('--primary-color'); });
+                                zone.addEventListener('blur', () => { zone.style.borderColor = 'rgba(128, 128, 128, 0.4)'; });
+                            } catch (e) { console.error(e); }
+
+                            const handlePaste = (e) => {
+                                const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+                                for (let i = 0; i < items.length; i++) {
+                                    if (items[i].type.indexOf('image') !== -1) {
+                                        const blob = items[i].getAsFile();
+                                        const reader = new FileReader();
+                                        reader.onload = (event) => {
+                                            const base64Data = event.target.result;
+                                            const textarea = window.parent.document.querySelector('.st-key-pasted_note_image_base64 textarea');
+                                            if (textarea) {
+                                                const nativeTextAreaValueSetter = Object.getOwnPropertyDescriptor(
+                                                    window.HTMLTextAreaElement.prototype,
+                                                    'value'
+                                                ).set;
+                                                nativeTextAreaValueSetter.call(textarea, base64Data);
+                                                textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                                                textarea.dispatchEvent(new Event('change', { bubbles: true }));
+                                                textarea.dispatchEvent(new Event('blur', { bubbles: true }));
+                                            }
+                                        };
+                                        reader.readAsDataURL(blob);
+                                        e.preventDefault();
+                                        break;
+                                    }
+                                }
+                            };
+                            zone.addEventListener('paste', handlePaste);
+                        </script>
+                        """,
+                        height=75,
+                    )
+
+                note_image = None
+                if uploaded_note_img is not None:
+                    note_image = Image.open(uploaded_note_img)
+                elif pasted_note_base64:
+                    try:
+                        import base64
+                        from io import BytesIO
+                        img_data = base64.b64decode(pasted_note_base64.split(",")[1])
+                        note_image = Image.open(BytesIO(img_data))
+                    except Exception as e:
+                        st.error(f"Lỗi đọc ảnh từ clipboard: {e}")
+
+                if note_image is not None:
+                    st.image(note_image, width=420)
+                    if pasted_note_base64:
+                        if st.button("Xóa ảnh đã dán", key="clear_pasted_note_btn", use_container_width=True):
+                            st.session_state.clear_pasted_note = True
+                            st.rerun()
+
+                    if st.button("Quét và trích xuất bằng AI", use_container_width=True):
+                        with st.spinner("AI đang quét chữ viết tay và phân tích điểm ngữ pháp..."):
+                            optimized = optimize_image(note_image)
+                            extracted_markdown = GeminiVocabularyExtractor().extract_grammar_note(optimized)
+                            st.session_state.new_note_content = extracted_markdown
+                            # Set default title if blank
+                            now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+                            st.session_state.new_note_title = f"Ghi chú ngữ pháp {now_str}"
+                            st.rerun()
+
+            elif mode == "Tự nhập tay":
+                if st.button("Khởi tạo khung soạn thảo mới", use_container_width=True):
+                    st.session_state.new_note_content = "# Soạn thảo ghi chú mới tại đây\n"
+                    st.session_state.new_note_title = "Ghi chú mới"
+                    st.rerun()
+
+            # Side-by-side Editor & Preview for New Note
+            if st.session_state.new_note_content:
+                st.write("---")
+                st.subheader("Khung soạn thảo & Xem trước")
+                
+                col_ed, col_prev = st.columns(2, gap="large")
+                with col_ed:
+                    st.session_state.new_note_title = st.text_input("Tiêu đề ghi chú", value=st.session_state.new_note_title)
+                    render_markdown_toolbar("new_note_content")
+                    st.session_state.new_note_content = st.text_area("Nội dung (Markdown)", value=st.session_state.new_note_content, height=450)
+                
+                with col_prev:
+                    st.markdown("<div style='font-size:14px; opacity:0.6; margin-bottom:12px;'>Bản xem trước trực quan (Live Preview):</div>", unsafe_allow_html=True)
+                    st.markdown(
+                        f"""
+                        <div style='border:1px solid rgba(128, 128, 128, 0.2); border-radius:8px; padding:20px; background-color: var(--secondary-background-color); min-height:480px;'>
+                            <h2 style='margin-top:0;'>{st.session_state.new_note_title}</h2>
+                            <hr style='border:0; border-top:1px solid rgba(128,128,128,0.2); margin-bottom:16px;'>
+                            <div class='markdown-body'>
+                                {st.session_state.new_note_content}
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                
+                left_btn, right_btn = st.columns(2)
+                if left_btn.button("Lưu ghi chú", use_container_width=True):
+                    if not st.session_state.new_note_title.strip():
+                        st.warning("Vui lòng điền tiêu đề ghi chú.")
+                    else:
+                        create_grammar_note(session, user["id"], st.session_state.new_note_title, st.session_state.new_note_content)
+                        st.success("Đã lưu ghi chú thành công!")
+                        # Reset states
+                        st.session_state.new_note_title = ""
+                        st.session_state.new_note_content = ""
+                        st.session_state.pasted_note_image_base64 = ""
+                        st.rerun()
+                if right_btn.button("Hủy bỏ", use_container_width=True):
+                    st.session_state.new_note_title = ""
+                    st.session_state.new_note_content = ""
+                    st.session_state.pasted_note_image_base64 = ""
+                    st.rerun()
+
+        # --- TAB 2: SEARCH NOTES ---
+        with tab_search:
+            st.subheader("Tìm kiếm và Tra cứu ghi chú")
+            search_query = st.text_input("Nhập từ khóa tìm kiếm (tiêu đề hoặc nội dung)")
+            notes = get_grammar_notes(session, user["id"], search_query)
+
+            if not notes:
+                st.info("Không tìm thấy ghi chú nào.")
+            else:
+                note_titles = [f"{n.title} (tạo ngày {n.created_at.strftime('%d/%m/%Y')})" for n in notes]
+                selected_note_display = st.selectbox("Chọn ghi chú cần xem", note_titles)
+                selected_note = notes[note_titles.index(selected_note_display)]
+
+                # Check if in edit mode for this note
+                if st.session_state.get("edit_note_id") == selected_note.id:
+                    # Edit mode
+                    st.write("---")
+                    st.subheader(f"Đang sửa ghi chú: {selected_note.title}")
+                    
+                    col_edit_l, col_edit_r = st.columns(2, gap="large")
+                    with col_edit_l:
+                        st.session_state.edit_note_title = st.text_input("Tiêu đề", value=st.session_state.edit_note_title)
+                        render_markdown_toolbar("edit_note_content")
+                        st.session_state.edit_note_content = st.text_area("Nội dung", value=st.session_state.edit_note_content, height=450)
+                    with col_edit_r:
+                        st.markdown("<div style='font-size:14px; opacity:0.6; margin-bottom:12px;'>Bản xem trước trực quan (Live Preview):</div>", unsafe_allow_html=True)
+                        st.markdown(
+                            f"""
+                            <div style='border:1px solid rgba(128, 128, 128, 0.2); border-radius:8px; padding:20px; background-color: var(--secondary-background-color); min-height:480px;'>
+                                <h2 style='margin-top:0;'>{st.session_state.edit_note_title}</h2>
+                                <hr style='border:0; border-top:1px solid rgba(128,128,128,0.2); margin-bottom:16px;'>
+                                <div class='markdown-body'>
+                                    {st.session_state.edit_note_content}
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                    
+                    btn_save, btn_cancel = st.columns(2)
+                    if btn_save.button("Lưu thay đổi", key="save_edit_note_btn", use_container_width=True):
+                        if not st.session_state.edit_note_title.strip():
+                            st.warning("Vui lòng nhập tiêu đề.")
+                        else:
+                            update_grammar_note(session, selected_note.id, st.session_state.edit_note_title, st.session_state.edit_note_content)
+                            st.success("Đã cập nhật thay đổi thành công!")
+                            st.session_state.pop("edit_note_id", None)
+                            st.rerun()
+                    if btn_cancel.button("Hủy sửa", key="cancel_edit_note_btn", use_container_width=True):
+                        st.session_state.pop("edit_note_id", None)
+                        st.rerun()
+
+                else:
+                    # View mode
+                    st.write("---")
+                    st.markdown(
+                        f"""
+                        <div style='border:1px solid rgba(128, 128, 128, 0.2); border-radius:8px; padding:24px 32px; background-color: var(--secondary-background-color); margin-bottom:20px;'>
+                            <h2 style='margin-top:0; color: var(--primary-color);'>{selected_note.title}</h2>
+                            <div style='font-size:12px; opacity:0.5; margin-bottom:20px;'>Ngày lưu: {selected_note.created_at.strftime('%d/%m/%Y %H:%M:%S')}</div>
+                            <hr style='border:0; border-top:1px solid rgba(128,128,128,0.2); margin-bottom:24px;'>
+                            <div class='markdown-body'>
+                                {selected_note.content}
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    col_actions = st.columns([1, 1, 4])
+                    if col_actions[0].button("Sửa ghi chú", use_container_width=True):
+                        st.session_state.edit_note_id = selected_note.id
+                        st.session_state.edit_note_title = selected_note.title
+                        st.session_state.edit_note_content = selected_note.content
+                        st.rerun()
+                    if col_actions[1].button("Xóa ghi chú", use_container_width=True):
+                        delete_grammar_note(session, selected_note.id)
+                        st.success("Đã xóa ghi chú thành công!")
+                        st.rerun()
+
+
 def quiz_screen() -> None:
     user = current_user()
     assert user is not None
@@ -686,6 +1073,14 @@ def quiz_screen() -> None:
             if deck is None:
                 return
 
+            allowed_langs = ["KR", "EN", "JP", "CN"]
+            is_allowed_lang = deck.language in allowed_langs
+
+            # Show input requirement option if deck language is supported
+            use_input = False
+            if is_allowed_lang:
+                use_input = st.checkbox("Yêu cầu nhập câu trả lời (Gõ bàn phím)", value=True, key="quiz_use_input")
+
             question_count = st.number_input("Số câu hỏi", min_value=1, max_value=100, value=20)
             if st.button("Bắt đầu quiz"):
                 cards = due_vocabulary(session, deck.id, int(question_count))
@@ -694,6 +1089,7 @@ def quiz_screen() -> None:
                 else:
                     st.session_state.quiz = {
                         "deck_language": deck.language,
+                        "use_input": use_input,
                         "cards": [
                             {
                                 "id": card.id,
@@ -708,6 +1104,7 @@ def quiz_screen() -> None:
                         "index": 0,
                         "show_answer": False,
                     }
+                    st.session_state.pop("quiz_eval", None)
                     rerun()
             
             # If quiz is finished, show completion screen
@@ -715,13 +1112,14 @@ def quiz_screen() -> None:
                 st.success("Đã hoàn thành lượt quiz.")
                 if st.button("Xóa lượt quiz"):
                     st.session_state.pop("quiz", None)
+                    st.session_state.pop("quiz_eval", None)
                     rerun()
             return
 
-        # Active quiz UI - NO database reads here except on answer submission
+        # Active quiz UI
         card = quiz["cards"][quiz["index"]]
         
-        # Randomize/Reverse direction logic
+        # Reverse direction logic
         if card["reversed"]:
             front_text = card["meaning"]
             caption = f"Dịch sang {quiz['deck_language']}"
@@ -737,6 +1135,7 @@ def quiz_screen() -> None:
         with col_cancel:
             if st.button("Hủy quiz", use_container_width=True):
                 st.session_state.pop("quiz", None)
+                st.session_state.pop("quiz_eval", None)
                 rerun()
 
         st.markdown(
@@ -749,18 +1148,91 @@ def quiz_screen() -> None:
             unsafe_allow_html=True,
         )
 
-        if not quiz["show_answer"]:
-            if st.button("Hiện đáp án", use_container_width=True):
-                quiz["show_answer"] = True
-                rerun()
-            return
+        is_keyboard_quiz = card["reversed"] and quiz.get("use_input")
 
-        # Back of card (Answer reveal)
-        st.markdown(f"### {back_text}")
+        if is_keyboard_quiz:
+            # Type answer quiz
+            if not quiz["show_answer"]:
+                with st.form("quiz_answer_form", clear_on_submit=True):
+                    user_ans = st.text_input("Nhập câu trả lời của bạn:")
+                    btn_check = st.form_submit_button("Kiểm tra đáp án")
+                
+                # Option to show answer without typing
+                if st.button("Hiện đáp án trực tiếp", use_container_width=True):
+                    quiz["show_answer"] = True
+                    st.session_state.quiz_eval = None
+                    rerun()
+                
+                if btn_check:
+                    ans_clean = user_ans.strip()
+                    if not ans_clean:
+                        st.warning("Vui lòng nhập câu trả lời trước khi kiểm tra.")
+                    else:
+                        is_correct = False
+                        matched_info = ""
+                        
+                        if ans_clean.lower() == back_text.strip().lower():
+                            is_correct = True
+                        elif quiz["deck_language"] == "KR":
+                            # For Korean, also check if it matches conjugation forms
+                            vocab_item = session.get(Vocabulary, card["id"])
+                            if vocab_item:
+                                conj = vocab_item.conjugation_data
+                                for k, val in conj.items():
+                                    if val and ans_clean == val.strip():
+                                        is_correct = True
+                                        label = {"a_eo_yeo": "아/어/여", "eun_neun": "은/는", "eu_ni_kka": "(으)니까"}.get(k, k)
+                                        matched_info = f" (Khớp với dạng chia {label}: {val})"
+                                        break
+                        
+                        st.session_state.quiz_eval = {
+                            "is_correct": is_correct,
+                            "user_ans": ans_clean,
+                            "matched_info": matched_info,
+                        }
+                        quiz["show_answer"] = True
+                        rerun()
+                return
+
+            else:
+                # Answer phase showing evaluation
+                eval_data = st.session_state.get("quiz_eval")
+                if eval_data is not None:
+                    if eval_data["is_correct"]:
+                        st.success(f"🎉 **Đúng rồi!** Bạn nhập: `{eval_data['user_ans']}`{eval_data['matched_info']}")
+                    else:
+                        st.error(f"❌ **Chưa chính xác.** Bạn nhập: `{eval_data['user_ans']}`. Đáp án đúng phải là: `{back_text}`")
+                else:
+                    st.info(f"Đáp án đúng: `{back_text}`")
+        else:
+            # Standard flashcard quiz
+            if not quiz["show_answer"]:
+                if st.button("Hiện đáp án", use_container_width=True):
+                    quiz["show_answer"] = True
+                    rerun()
+                return
+
+        # Back of card (Answer details)
+        if not is_keyboard_quiz or st.session_state.get("quiz_eval") is None:
+            st.markdown(f"### {back_text}")
+        
         if card["example"]:
             st.write(card["example"])
         if card["note"]:
             st.info(card["note"])
+
+        # Display conjugation columns if it's a Korean card in Korean deck
+        if quiz["deck_language"] == "KR":
+            vocab_item = session.get(Vocabulary, card["id"])
+            if vocab_item:
+                conj = vocab_item.conjugation_data
+                if conj.get("a_eo_yeo") or conj.get("eun_neun") or conj.get("eu_ni_kka"):
+                    st.write("---")
+                    st.caption("Các dạng chia động từ (Hàn):")
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("아/어/여", conj.get("a_eo_yeo") or "—")
+                    c2.metric("은/는", conj.get("eun_neun") or "—")
+                    c3.metric("(으)니까", conj.get("eu_ni_kka") or "—")
 
         left, middle, right = st.columns(3)
         actions = [
@@ -773,7 +1245,9 @@ def quiz_screen() -> None:
                 update_schedule(session, card["id"], result)
                 quiz["index"] += 1
                 quiz["show_answer"] = False
+                st.session_state.pop("quiz_eval", None)
                 rerun()
+
 
 
 def hdsd_screen() -> None:
@@ -814,6 +1288,29 @@ def hdsd_screen() -> None:
                 * Hỗ trợ sửa chi tiết hoặc xóa hẳn từ vựng khỏi cơ sở dữ liệu.
                 """
             )
+        with st.expander("🤖 4. Tự Động Chia Động Từ Tiếng Hàn (AI)"):
+            st.markdown(
+                """
+                Dành riêng cho chủ đề tiếng Hàn (**KR**):
+                * Trong tab **Danh sách từ**, nhấn nút **Tự động chia động từ (AI)**.
+                * Hệ thống tự động lọc các từ kết thúc bằng **"다"** (động từ/tính từ) chưa được chia để gửi yêu cầu đến Gemini (giúp tiết kiệm API cost tối đa).
+                * Kết quả tự động phân tích và tạo thêm 3 cột: **아/어/여**, **은/n는** (định ngữ), và **(으)니까**.
+                * Bạn có thể bấm chọn **Ghi đè từ đã chia** nếu muốn chia lại hàng loạt. Các cột này cũng hiển thị trong form chỉnh sửa từ.
+                """
+            )
+        with st.expander("📓 5. Quản Lý Ghi Chú Ngữ Pháp (AI)"):
+            st.markdown(
+                """
+                Lưu trữ và ôn tập cấu trúc ngữ pháp thông minh:
+                * **Tạo ghi chú mới**:
+                  * Quét từ hình ảnh ghi chú viết tay bằng AI (tự động nhận dạng và dùng thẻ `<mark>` highlight các công thức ngữ pháp cốt lõi) hoặc tự nhập tay.
+                  * Soạn thảo với **Markdown Editor & Live Preview** side-by-side hiển thị trực quan thay đổi.
+                  * Sử dụng thanh công cụ phím bấm chèn nhanh định dạng Markdown (Tiêu đề, in đậm, in nghiêng, highlight, danh sách, bảng biểu, hộp ghi chú).
+                * **Tìm kiếm ghi chú**:
+                  * Tra cứu ghi chú nhanh chóng theo tiêu đề hoặc nội dung ngữ pháp.
+                  * Đọc ghi chú với định dạng Markdown chuyên nghiệp. Hỗ trợ đầy đủ chức năng sửa đổi nội dung hoặc xóa ghi chú.
+                """
+            )
 
     with col2:
         st.subheader("🧠 Cơ chế Ôn tập (Quiz)")
@@ -824,6 +1321,17 @@ def hdsd_screen() -> None:
             * Nhìn từ vựng ➔ Tự đoán nghĩa ➔ Bấm **Hiện đáp án** ➔ Đánh giá mức độ ghi nhớ.
             """
         )
+        
+        with st.expander("⌨️ Nhập Câu Trả Lời Khi Làm Quiz"):
+            st.markdown(
+                """
+                Ôn tập chủ động bằng cách gõ bàn phím:
+                * Khi bắt đầu Quiz với chủ đề tiếng Hàn (KR), Anh (EN), Nhật (JP), hay Trung (CN), bạn có thể tích chọn **Yêu cầu nhập câu trả lời (Gõ bàn phím)**.
+                * Hệ thống hiển thị ô nhập liệu để bạn viết đáp án ngoại ngữ.
+                * **So khớp thông minh**: Kết quả gõ của bạn được so sánh với từ gốc. Đặc biệt với tiếng Hàn, hệ thống sẽ kiểm tra xem câu trả lời của bạn có khớp với bất kỳ dạng chia động từ nào đã lưu trong database (**아/어/여**, **은/n는**, **(으)니까**) hay không để công nhận đáp án chính xác!
+                """
+            )
+            
         st.info(
             """
             **Chu kỳ ôn tập:**
@@ -928,6 +1436,8 @@ def main() -> None:
         word_list_screen()
     elif page == "Chủ đề":
         topic_screen()
+    elif page == "Ghi chú ngữ pháp":
+        grammar_notes_screen()
     elif page == "Quiz":
         quiz_screen()
     else:
