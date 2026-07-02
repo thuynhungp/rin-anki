@@ -95,6 +95,13 @@ class Progress(Base):
     correct_count: Mapped[int] = mapped_column(Integer, default=0)
     wrong_count: Mapped[int] = mapped_column(Integer, default=0)
     last_review: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    next_review_rev: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=lambda: now_utc())
+    remember_streak_rev: Mapped[int | None] = mapped_column(Integer, default=0)
+    correct_count_rev: Mapped[int | None] = mapped_column(Integer, default=0)
+    wrong_count_rev: Mapped[int | None] = mapped_column(Integer, default=0)
+    last_review_rev: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     vocabulary: Mapped[Vocabulary] = relationship(back_populates="progress")
 
 
@@ -148,6 +155,18 @@ def init_db() -> None:
         if "conjugations" not in columns_vocab:
             connection.execute(text("ALTER TABLE vocabulary ADD COLUMN conjugations TEXT DEFAULT '{}'"))
 
+        columns_progress = {row[1] for row in connection.execute(text("PRAGMA table_info(progress)"))}
+        if "next_review_rev" not in columns_progress:
+            connection.execute(text("ALTER TABLE progress ADD COLUMN next_review_rev DATETIME"))
+        if "remember_streak_rev" not in columns_progress:
+            connection.execute(text("ALTER TABLE progress ADD COLUMN remember_streak_rev INTEGER DEFAULT 0"))
+        if "correct_count_rev" not in columns_progress:
+            connection.execute(text("ALTER TABLE progress ADD COLUMN correct_count_rev INTEGER DEFAULT 0"))
+        if "wrong_count_rev" not in columns_progress:
+            connection.execute(text("ALTER TABLE progress ADD COLUMN wrong_count_rev INTEGER DEFAULT 0"))
+        if "last_review_rev" not in columns_progress:
+            connection.execute(text("ALTER TABLE progress ADD COLUMN last_review_rev DATETIME"))
+
     with SessionLocal() as session:
         for name in USERS:
             user = session.scalar(select(User).where(User.name == name))
@@ -194,7 +213,7 @@ def add_vocabulary(session: Session, deck_id: int, row: dict[str, str]) -> Vocab
     )
     session.add(vocab)
     session.flush()
-    session.add(Progress(vocabulary_id=vocab.id, next_review=now_utc()))
+    session.add(Progress(vocabulary_id=vocab.id, next_review=now_utc(), next_review_rev=now_utc()))
     session.commit()
     return vocab
 
@@ -211,28 +230,45 @@ def check_vocabulary_exists(session: Session, deck_id: int, word: str) -> bool:
 
 
 
-def update_schedule(session: Session, vocabulary_id: int, result: str) -> None:
+def update_schedule(session: Session, vocabulary_id: int, result: str, reversed: bool = False) -> None:
     progress = session.scalar(select(Progress).where(Progress.vocabulary_id == vocabulary_id))
     if progress is None:
-        progress = Progress(vocabulary_id=vocabulary_id)
+        progress = Progress(vocabulary_id=vocabulary_id, next_review=now_utc(), next_review_rev=now_utc())
         session.add(progress)
 
-    current_streak = progress.remember_streak or 0
-    if result == "forgot":
-        progress.next_review = now_utc() + timedelta(minutes=5)
-        progress.remember_streak = 0
-        progress.wrong_count = (progress.wrong_count or 0) + 1
-    elif result == "partial":
-        progress.next_review = now_utc() + timedelta(hours=2)
-        progress.correct_count = (progress.correct_count or 0) + 1
+    if not reversed:
+        current_streak = progress.remember_streak or 0
+        if result == "forgot":
+            progress.next_review = now_utc() + timedelta(minutes=5)
+            progress.remember_streak = 0
+            progress.wrong_count = (progress.wrong_count or 0) + 1
+        elif result == "partial":
+            progress.next_review = now_utc() + timedelta(hours=2)
+            progress.correct_count = (progress.correct_count or 0) + 1
+        else:
+            new_streak = current_streak + 1
+            interval_days = {1: 7, 2: 14, 3: 30, 4: 60}.get(new_streak, 90)
+            progress.next_review = now_utc() + timedelta(days=interval_days)
+            progress.remember_streak = new_streak
+            progress.correct_count = (progress.correct_count or 0) + 1
+        progress.last_review = now_utc()
     else:
-        new_streak = current_streak + 1
-        interval_days = {1: 7, 2: 14, 3: 30, 4: 60}.get(new_streak, 90)
-        progress.next_review = now_utc() + timedelta(days=interval_days)
-        progress.remember_streak = new_streak
-        progress.correct_count = (progress.correct_count or 0) + 1
+        current_streak = progress.remember_streak_rev or 0
+        if result == "forgot":
+            progress.next_review_rev = now_utc() + timedelta(minutes=5)
+            progress.remember_streak_rev = 0
+            progress.wrong_count_rev = (progress.wrong_count_rev or 0) + 1
+        elif result == "partial":
+            progress.next_review_rev = now_utc() + timedelta(hours=2)
+            progress.correct_count_rev = (progress.correct_count_rev or 0) + 1
+        else:
+            new_streak = current_streak + 1
+            interval_days = {1: 7, 2: 14, 3: 30, 4: 60}.get(new_streak, 90)
+            progress.next_review_rev = now_utc() + timedelta(days=interval_days)
+            progress.remember_streak_rev = new_streak
+            progress.correct_count_rev = (progress.correct_count_rev or 0) + 1
+        progress.last_review_rev = now_utc()
 
-    progress.last_review = now_utc()
     session.commit()
 
 
@@ -245,6 +281,64 @@ def due_vocabulary(session: Session, deck_id: int, limit: int) -> list[Vocabular
         .limit(limit)
     )
     return list(session.scalars(statement))
+
+
+def due_vocabulary_cards(session: Session, deck_id: int, limit: int) -> list[dict]:
+    from sqlalchemy import or_
+    now = now_utc()
+    
+    # Query vocabulary and progress
+    statement = (
+        select(Vocabulary)
+        .join(Progress)
+        .where(
+            Vocabulary.deck_id == deck_id,
+            or_(
+                Progress.next_review <= now,
+                Progress.next_review_rev == None,
+                Progress.next_review_rev <= now
+            )
+        )
+    )
+    vocab_items = list(session.scalars(statement))
+    
+    # For each vocabulary item, check which sides are due
+    cards = []
+    for vocab in vocab_items:
+        progress = vocab.progress
+        if progress.next_review <= now:
+            cards.append({
+                "vocab": vocab,
+                "reversed": False,
+                "due_time": progress.next_review
+            })
+        
+        rev_due = progress.next_review_rev if progress.next_review_rev is not None else now
+        if progress.next_review_rev is None or progress.next_review_rev <= now:
+            cards.append({
+                "vocab": vocab,
+                "reversed": True,
+                "due_time": rev_due
+            })
+            
+    # Sort cards by due_time so that more overdue cards are shown first
+    cards.sort(key=lambda c: c["due_time"])
+    
+    # Take up to the limit
+    selected_cards = cards[:limit]
+    
+    # Format them as the quiz expects
+    return [
+        {
+            "id": c["vocab"].id,
+            "word": c["vocab"].word,
+            "meaning": c["vocab"].meaning,
+            "example": c["vocab"].example,
+            "note": c["vocab"].note,
+            "reversed": c["reversed"],
+        }
+        for c in selected_cards
+    ]
 
 
 class GrammarNote(Base):

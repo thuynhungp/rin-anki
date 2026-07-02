@@ -26,6 +26,7 @@ from services.database import (
     check_vocabulary_exists,
     create_deck,
     due_vocabulary,
+    due_vocabulary_cards,
     get_decks,
     get_users,
     init_db,
@@ -85,9 +86,18 @@ def apply_theme(theme_name: str) -> None:
             background-color: transparent !important;
         }}
         
-        /* Force inputs, textareas, and selectboxes to use secondary theme colors */
+        /* Force inputs, textareas, file uploaders, and selectboxes to use secondary theme colors */
         div[data-baseweb="select"] > div,
-        div[data-baseweb="input"] {{
+        div[data-baseweb="input"] > div,
+        div[data-baseweb="input"],
+        div[data-baseweb="textarea"] > div,
+        div[data-baseweb="textarea"],
+        .stTextInput input,
+        .stTextArea textarea,
+        .stSelectbox div,
+        div[data-testid="stFileUploader"] section,
+        div[data-testid="stFileUploaderFile"],
+        div[data-testid="stFileUploaderFile"] > div {{
             background-color: var(--secondary-background-color) !important;
             color: var(--text-color) !important;
             border-color: rgba(128, 128, 128, 0.2) !important;
@@ -95,7 +105,10 @@ def apply_theme(theme_name: str) -> None:
         
         /* Style focus state of inputs */
         div[data-baseweb="select"] > div:focus-within,
-        div[data-baseweb="input"]:focus-within {{
+        div[data-baseweb="input"]:focus-within,
+        div[data-baseweb="textarea"]:focus-within,
+        .stTextInput input:focus,
+        .stTextArea textarea:focus {{
             border-color: var(--primary-color) !important;
         }}
         
@@ -175,6 +188,55 @@ def display_user_name(name: str) -> str:
 
 def localized_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.rename(columns=VOCABULARY_COLUMN_LABELS)
+
+
+def display_custom_table(df: pd.DataFrame, localize: bool = True) -> None:
+    table_df = localized_frame(df) if localize else df
+    html_table = table_df.to_html(index=False, classes="custom-theme-table")
+    st.markdown(
+        f"""<style>
+.custom-table-container {{
+    width: 100%;
+    max-height: 450px;
+    overflow-x: auto;
+    overflow-y: auto;
+    border: 1px solid rgba(128, 128, 128, 0.2);
+    border-radius: 8px;
+    margin-bottom: 20px;
+}}
+table.custom-theme-table {{
+    width: 100%;
+    border-collapse: collapse;
+    font-family: inherit;
+    background-color: var(--secondary-background-color) !important;
+    color: var(--text-color) !important;
+}}
+table.custom-theme-table th {{
+    position: -webkit-sticky;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background-color: var(--primary-color) !important;
+    color: var(--background-color) !important;
+    font-weight: 600;
+    text-align: left;
+    padding: 12px;
+    border-bottom: 2px solid rgba(128, 128, 128, 0.3);
+}}
+table.custom-theme-table td {{
+    padding: 12px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.15);
+    vertical-align: middle;
+}}
+table.custom-theme-table tr:hover {{
+    background-color: rgba(128, 128, 128, 0.05);
+}}
+</style>
+<div class="custom-table-container">
+    {html_table}
+</div>""",
+        unsafe_allow_html=True
+    )
 
 
 def select_user_screen() -> None:
@@ -372,7 +434,7 @@ def ai_import_ui(session, deck: Deck) -> None:
                         padding: 16px 12px;
                         text-align: center;
                         color: var(--text-color, #2D2A26);
-                        background-color: var(--secondary-background-color, #EFECE6);
+                        background-color: var(--secondary-background-color, rgba(128, 128, 128, 0.1));
                         cursor: pointer;
                         font-family: sans-serif;
                         font-size: 14px;
@@ -391,7 +453,7 @@ def ai_import_ui(session, deck: Deck) -> None:
                         const zone = document.getElementById('paste-zone');
                         
                         try {
-                            const parentStyle = window.parent.getComputedStyle(window.parent.document.body);
+                            const parentStyle = window.parent.getComputedStyle(window.parent.document.documentElement);
                             zone.style.color = parentStyle.getPropertyValue('--text-color');
                             zone.style.backgroundColor = parentStyle.getPropertyValue('--secondary-background-color');
                             
@@ -665,7 +727,9 @@ def word_list_screen() -> None:
 
         frame = vocabulary_frame(session, deck.id, search)
         display_frame = frame.drop(columns=["db_id"]) if "db_id" in frame.columns else frame
-        st.dataframe(localized_frame(display_frame), hide_index=True, use_container_width=True)
+        if deck.language == "KR" and "note" in display_frame.columns:
+            display_frame = display_frame.drop(columns=["note"])
+        display_custom_table(display_frame)
 
         if frame.empty:
             return
@@ -728,15 +792,14 @@ def topic_screen() -> None:
     with SessionLocal() as session:
         decks = get_decks(session, user["id"])
         if decks:
-            st.dataframe(
+            display_custom_table(
                 pd.DataFrame(
                     [
                         {"id": deck.id, "Ngôn ngữ": deck.language, "Chủ đề": deck.name}
                         for deck in decks
                     ]
                 ),
-                hide_index=True,
-                use_container_width=True,
+                localize=False
             )
 
         with st.form("create-deck", clear_on_submit=True):
@@ -848,7 +911,7 @@ def grammar_notes_screen() -> None:
                             padding: 16px 12px;
                             text-align: center;
                             color: var(--text-color, #2D2A26);
-                            background-color: var(--secondary-background-color, #EFECE6);
+                            background-color: var(--secondary-background-color, rgba(128, 128, 128, 0.1));
                             cursor: pointer;
                             font-family: sans-serif;
                             font-size: 14px;
@@ -866,7 +929,7 @@ def grammar_notes_screen() -> None:
                         <script>
                             const zone = document.getElementById('paste-zone-note');
                             try {
-                                const parentStyle = window.parent.getComputedStyle(window.parent.document.body);
+                                const parentStyle = window.parent.getComputedStyle(window.parent.document.documentElement);
                                 zone.style.color = parentStyle.getPropertyValue('--text-color');
                                 zone.style.backgroundColor = parentStyle.getPropertyValue('--secondary-background-color');
                                 zone.addEventListener('focus', () => { zone.style.borderColor = parentStyle.getPropertyValue('--primary-color'); });
@@ -1010,84 +1073,100 @@ def grammar_notes_screen() -> None:
         # --- TAB 2: SEARCH NOTES ---
         with tab_search:
             st.subheader("Tìm kiếm và Tra cứu ghi chú")
-            search_query = st.text_input("Nhập từ khóa tìm kiếm (tiêu đề hoặc nội dung)")
-            notes = get_grammar_notes(session, user["id"], search_query)
-
-            if not notes:
-                st.info("Không tìm thấy ghi chú nào.")
-            else:
-                note_titles = [f"{n.title} (tạo ngày {n.created_at.strftime('%d/%m/%Y')})" for n in notes]
-                selected_note_display = st.selectbox("Chọn ghi chú cần xem", note_titles)
-                selected_note = notes[note_titles.index(selected_note_display)]
-
-                # Check if in edit mode for this note
-                if st.session_state.get("edit_note_id") == selected_note.id:
-                    # Edit mode
-                    st.write("---")
-                    st.subheader(f"Đang sửa ghi chú: {selected_note.title}")
+            
+            col_menu, col_content = st.columns([1, 3], gap="large")
+            
+            with col_menu:
+                search_query = st.text_input("Tìm kiếm", placeholder="Tìm tiêu đề hoặc nội dung...", label_visibility="collapsed")
+                notes = get_grammar_notes(session, user["id"], search_query)
+                
+                selected_note = None
+                if not notes:
+                    st.info("Không tìm thấy ghi chú nào.")
+                else:
+                    # Determine currently selected note
+                    current_selected_id = st.session_state.get("selected_note_id")
+                    matching_ids = [n.id for n in notes]
+                    if current_selected_id not in matching_ids:
+                        current_selected_id = notes[0].id
+                        st.session_state.selected_note_id = current_selected_id
                     
-                    col_edit_l, col_edit_r = st.columns(2, gap="large")
-                    with col_edit_l:
-                        st.text_input("Tiêu đề", key="edit_note_title")
-                        render_markdown_toolbar("edit_note_content")
-                        st.text_area("Nội dung", key="edit_note_content", height=450)
-                    with col_edit_r:
-                        col_p_title, col_p_btn = st.columns([2, 1], vertical_alignment="center")
-                        with col_p_title:
-                            st.caption("Bản xem trước (Xem trước thủ công):")
-                        with col_p_btn:
-                            if st.button("Cập nhật xem trước", key="update_edit_preview", use_container_width=True):
-                                st.session_state.edit_note_preview_title = st.session_state.edit_note_title
-                                st.session_state.edit_note_preview_content = st.session_state.edit_note_content
+                    selected_note = next((n for n in notes if n.id == current_selected_id), None)
+                    
+                    with st.container(height=500):
+                        for note in notes:
+                            btn_type = "primary" if note.id == current_selected_id else "secondary"
+                            if st.button(f"📓 {note.title}", key=f"menu_note_{note.id}", use_container_width=True, type=btn_type):
+                                st.session_state.selected_note_id = note.id
                                 st.rerun()
-                        with st.container(border=True):
-                            title_val = st.session_state.get("edit_note_preview_title", "")
-                            content_val = st.session_state.get("edit_note_preview_content", "")
-                            if not title_val and not content_val:
-                                st.info("Nhấn 'Cập nhật xem trước' để hiển thị bản xem trước.")
+            
+            with col_content:
+                if selected_note is not None:
+                    # Check if in edit mode for this note
+                    if st.session_state.get("edit_note_id") == selected_note.id:
+                        # Edit mode
+                        st.subheader(f"Đang sửa ghi chú: {selected_note.title}")
+                        
+                        col_edit_l, col_edit_r = st.columns(2, gap="medium")
+                        with col_edit_l:
+                            st.text_input("Tiêu đề", key="edit_note_title")
+                            render_markdown_toolbar("edit_note_content")
+                            st.text_area("Nội dung (Markdown)", key="edit_note_content", height=450)
+                        with col_edit_r:
+                            col_p_title, col_p_btn = st.columns([2, 1], vertical_alignment="center")
+                            with col_p_title:
+                                st.caption("Bản xem trước (Xem trước thủ công):")
+                            with col_p_btn:
+                                if st.button("Cập nhật xem trước", key="update_edit_preview", use_container_width=True):
+                                    st.session_state.edit_note_preview_title = st.session_state.edit_note_title
+                                    st.session_state.edit_note_preview_content = st.session_state.edit_note_content
+                                    st.rerun()
+                            with st.container(border=True):
+                                title_val = st.session_state.get("edit_note_preview_title", "")
+                                content_val = st.session_state.get("edit_note_preview_content", "")
+                                if not title_val and not content_val:
+                                    st.info("Nhấn 'Cập nhật xem trước' để hiển thị bản xem trước.")
+                                else:
+                                    st.markdown(f"## {title_val}", unsafe_allow_html=True)
+                                    st.markdown("---")
+                                    st.markdown(content_val, unsafe_allow_html=True)
+                        
+                        btn_save, btn_cancel = st.columns(2)
+                        if btn_save.button("Lưu thay đổi", key="save_edit_note_btn", use_container_width=True):
+                            if not st.session_state.edit_note_title.strip():
+                                st.warning("Vui lòng nhập tiêu đề.")
                             else:
-                                st.markdown(f"## {title_val}", unsafe_allow_html=True)
-                                st.markdown("---")
-                                st.markdown(content_val, unsafe_allow_html=True)
-                    
-                    btn_save, btn_cancel = st.columns(2)
-                    if btn_save.button("Lưu thay đổi", key="save_edit_note_btn", use_container_width=True):
-                        if not st.session_state.edit_note_title.strip():
-                            st.warning("Vui lòng nhập tiêu đề.")
-                        else:
-                            update_grammar_note(session, selected_note.id, st.session_state.edit_note_title, st.session_state.edit_note_content)
-                            st.success("Đã cập nhật thay đổi thành công!")
+                                update_grammar_note(session, selected_note.id, st.session_state.edit_note_title, st.session_state.edit_note_content)
+                                st.success("Đã cập nhật thay đổi thành công!")
+                                st.session_state.pop("edit_note_id", None)
+                                st.session_state.pop("edit_note_preview_title", None)
+                                st.session_state.pop("edit_note_preview_content", None)
+                                st.rerun()
+                        if btn_cancel.button("Hủy sửa", key="cancel_edit_note_btn", use_container_width=True):
                             st.session_state.pop("edit_note_id", None)
                             st.session_state.pop("edit_note_preview_title", None)
                             st.session_state.pop("edit_note_preview_content", None)
                             st.rerun()
-                    if btn_cancel.button("Hủy sửa", key="cancel_edit_note_btn", use_container_width=True):
-                        st.session_state.pop("edit_note_id", None)
-                        st.session_state.pop("edit_note_preview_title", None)
-                        st.session_state.pop("edit_note_preview_content", None)
-                        st.rerun()
+                    else:
+                        # View mode
+                        with st.container(border=True):
+                            st.markdown(f"## {selected_note.title}", unsafe_allow_html=True)
+                            st.caption(f"Ngày lưu: {selected_note.created_at.strftime('%d/%m/%Y %H:%M:%S')}")
+                            st.markdown("---")
+                            st.markdown(selected_note.content, unsafe_allow_html=True)
 
-                else:
-                    # View mode
-                    st.write("---")
-                    with st.container(border=True):
-                        st.markdown(f"## {selected_note.title}", unsafe_allow_html=True)
-                        st.caption(f"Ngày lưu: {selected_note.created_at.strftime('%d/%m/%Y %H:%M:%S')}")
-                        st.markdown("---")
-                        st.markdown(selected_note.content, unsafe_allow_html=True)
-
-                    col_actions = st.columns([1, 1, 4])
-                    if col_actions[0].button("Sửa ghi chú", use_container_width=True):
-                        st.session_state.edit_note_id = selected_note.id
-                        st.session_state.edit_note_title = selected_note.title
-                        st.session_state.edit_note_content = selected_note.content
-                        st.session_state.edit_note_preview_title = selected_note.title
-                        st.session_state.edit_note_preview_content = selected_note.content
-                        st.rerun()
-                    if col_actions[1].button("Xóa ghi chú", use_container_width=True):
-                        delete_grammar_note(session, selected_note.id)
-                        st.success("Đã xóa ghi chú thành công!")
-                        st.rerun()
+                        col_actions = st.columns([1, 1, 4])
+                        if col_actions[0].button("Sửa ghi chú", use_container_width=True):
+                            st.session_state.edit_note_id = selected_note.id
+                            st.session_state.edit_note_title = selected_note.title
+                            st.session_state.edit_note_content = selected_note.content
+                            st.session_state.edit_note_preview_title = selected_note.title
+                            st.session_state.edit_note_preview_content = selected_note.content
+                            st.rerun()
+                        if col_actions[1].button("Xóa ghi chú", use_container_width=True):
+                            delete_grammar_note(session, selected_note.id)
+                            st.success("Đã xóa ghi chú thành công!")
+                            st.rerun()
 
 
 def quiz_screen() -> None:
@@ -1116,37 +1195,76 @@ def quiz_screen() -> None:
 
             question_count = st.number_input("Số câu hỏi", min_value=1, max_value=100, value=20)
             if st.button("Bắt đầu quiz"):
-                cards = due_vocabulary(session, deck.id, int(question_count))
+                cards = due_vocabulary_cards(session, deck.id, int(question_count))
                 if not cards:
                     st.info("Hiện chưa có thẻ nào đến hạn ôn.")
                 else:
                     st.session_state.quiz = {
                         "deck_language": deck.language,
                         "use_input": use_input,
-                        "cards": [
-                            {
-                                "id": card.id,
-                                "word": card.word,
-                                "meaning": card.meaning,
-                                "example": card.example,
-                                "note": card.note,
-                                "reversed": random.choice([True, False]),
-                            }
-                            for card in cards
-                        ],
+                        "cards": cards,
                         "index": 0,
                         "show_answer": False,
+                        "results": [],
                     }
                     st.session_state.pop("quiz_eval", None)
                     rerun()
             
             # If quiz is finished, show completion screen
             if quiz and quiz.get("cards") and quiz["index"] >= len(quiz["cards"]):
-                st.success("Đã hoàn thành lượt quiz.")
-                if st.button("Xóa lượt quiz"):
+                # Calculate mark
+                results = quiz.get("results", [])
+                total = len(quiz["cards"])
+                remembered_cnt = sum(1 for r in results if r["result"] == "remembered")
+                partial_cnt = sum(1 for r in results if r["result"] == "partial")
+                forgot_cnt = sum(1 for r in results if r["result"] == "forgot")
+                
+                score = (remembered_cnt * 10 + partial_cnt * 5) / total if total > 0 else 0
+                
+                st.balloons()
+                
+                st.markdown(
+                    f"""
+                    <div style='border:1px solid rgba(128, 128, 128, 0.2); border-radius:8px; padding:24px; text-align:center; background-color: var(--secondary-background-color); margin-bottom: 24px;'>
+                        <h2 style='color: var(--primary-color); margin-bottom: 8px;'>🎉 Hoàn thành lượt quiz!</h2>
+                        <div style='font-size:48px; font-weight:700; color: var(--text-color);'>{score:.1f} <span style='font-size:24px; font-weight:normal;'>/ 10</span></div>
+                        <div style='margin-top:12px; font-size:16px; color: var(--text-color); opacity: 0.8;'>
+                            😄 Đã nhớ: <b>{remembered_cnt}</b> | 🤔 Nhớ sơ sơ: <b>{partial_cnt}</b> | 😵 Chưa nhớ: <b>{forgot_cnt}</b>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+                
+                # Show review list
+                review_list = [r for r in results if r["result"] in ("forgot", "partial")]
+                if review_list:
+                    st.markdown("### 🔍 Danh sách từ cần ôn lại")
+                    
+                    # Prepare list data
+                    review_data = []
+                    for item in review_list:
+                        card = item["card"]
+                        side_str = "VN ➔ KR" if card["reversed"] else f"{quiz['deck_language']} ➔ VN"
+                        status_str = "😵 Chưa nhớ" if item["result"] == "forgot" else "🤔 Nhớ sơ sơ"
+                        
+                        review_data.append({
+                            "Từ": card["word"],
+                            "Nghĩa": card["meaning"],
+                            "Chiều ôn": side_str,
+                            "Trạng thái": status_str,
+                            "Ví dụ": card["example"],
+                            "Ghi chú": card["note"]
+                        })
+                    
+                    display_custom_table(pd.DataFrame(review_data), localize=False)
+                else:
+                    st.success("Tuyệt vời! Bạn đã thuộc tất cả các từ trong lượt quiz này! 🥳")
+
+                if st.button("Xóa lượt quiz & Quay lại", use_container_width=True):
                     st.session_state.pop("quiz", None)
                     st.session_state.pop("quiz_eval", None)
-                    rerun()
+                    st.rerun()
             return
 
         # Active quiz UI
@@ -1275,7 +1393,13 @@ def quiz_screen() -> None:
         ]
         for column, label, result in actions:
             if column.button(label, use_container_width=True):
-                update_schedule(session, card["id"], result)
+                update_schedule(session, card["id"], result, reversed=card.get("reversed", False))
+                if "results" not in quiz:
+                    quiz["results"] = []
+                quiz["results"].append({
+                    "card": card,
+                    "result": result
+                })
                 quiz["index"] += 1
                 quiz["show_answer"] = False
                 st.session_state.pop("quiz_eval", None)
