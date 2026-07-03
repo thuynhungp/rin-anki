@@ -132,8 +132,25 @@ def get_connection():
     return LibSQLConnectionProxy(conn)
 
 
-engine = create_engine("sqlite://", creator=get_connection, future=True)
-SessionLocal = sessionmaker(bind=engine, future=True)
+def get_cached_engine():
+    import streamlit as st
+    
+    @st.cache_resource
+    def _get_engine():
+        return create_engine("sqlite://", creator=get_connection, pool_pre_ping=True, future=True)
+        
+    return _get_engine()
+
+
+class EngineProxy:
+    def __getattr__(self, name):
+        return getattr(get_cached_engine(), name)
+
+
+engine = EngineProxy()
+
+def SessionLocal():
+    return sessionmaker(bind=get_cached_engine(), future=True)()
 
 
 def now_utc() -> datetime:
@@ -166,6 +183,10 @@ def init_db() -> None:
             connection.execute(text("ALTER TABLE progress ADD COLUMN wrong_count_rev INTEGER DEFAULT 0"))
         if "last_review_rev" not in columns_progress:
             connection.execute(text("ALTER TABLE progress ADD COLUMN last_review_rev DATETIME"))
+
+        columns_notes = {row[1] for row in connection.execute(text("PRAGMA table_info(grammar_notes)"))}
+        if "display_order" not in columns_notes:
+            connection.execute(text("ALTER TABLE grammar_notes ADD COLUMN display_order INTEGER NOT NULL DEFAULT 0"))
 
     with SessionLocal() as session:
         for name in USERS:
@@ -286,14 +307,17 @@ def due_vocabulary(session: Session, deck_id: int, limit: int) -> list[Vocabular
 def due_vocabulary_cards(session: Session, deck_id: int, limit: int) -> list[dict]:
     from sqlalchemy import or_
     now = now_utc()
+    if now.tzinfo is not None:
+        now = now.replace(tzinfo=None)
     
     # Query vocabulary and progress
     statement = (
         select(Vocabulary)
-        .join(Progress)
+        .outerjoin(Progress)
         .where(
             Vocabulary.deck_id == deck_id,
             or_(
+                Progress.id == None,
                 Progress.next_review <= now,
                 Progress.next_review_rev == None,
                 Progress.next_review_rev <= now
@@ -306,19 +330,39 @@ def due_vocabulary_cards(session: Session, deck_id: int, limit: int) -> list[dic
     cards = []
     for vocab in vocab_items:
         progress = vocab.progress
-        if progress.next_review <= now:
+        if progress is None:
+            progress = Progress(vocabulary_id=vocab.id, next_review=now, next_review_rev=now)
+            session.add(progress)
+            session.flush()
+        
+        next_rev = progress.next_review
+        if next_rev is None:
+            progress.next_review = now
+            session.flush()
+            next_rev = now
+        elif next_rev.tzinfo is not None:
+            next_rev = next_rev.replace(tzinfo=None)
+        
+        if next_rev <= now:
             cards.append({
                 "vocab": vocab,
                 "reversed": False,
-                "due_time": progress.next_review
+                "due_time": next_rev
             })
         
-        rev_due = progress.next_review_rev if progress.next_review_rev is not None else now
-        if progress.next_review_rev is None or progress.next_review_rev <= now:
+        next_rev_rev = progress.next_review_rev
+        if next_rev_rev is None:
+            progress.next_review_rev = now
+            session.flush()
+            next_rev_rev = now
+        elif next_rev_rev.tzinfo is not None:
+            next_rev_rev = next_rev_rev.replace(tzinfo=None)
+            
+        if next_rev_rev <= now:
             cards.append({
                 "vocab": vocab,
                 "reversed": True,
-                "due_time": rev_due
+                "due_time": next_rev_rev
             })
             
     # Sort cards by due_time so that more overdue cards are shown first
@@ -336,6 +380,7 @@ def due_vocabulary_cards(session: Session, deck_id: int, limit: int) -> list[dic
             "example": c["vocab"].example,
             "note": c["vocab"].note,
             "reversed": c["reversed"],
+            "conjugation_data": c["vocab"].conjugation_data,
         }
         for c in selected_cards
     ]
@@ -348,6 +393,7 @@ class GrammarNote(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: now_utc())
 
     user: Mapped[User] = relationship(back_populates="grammar_notes")
@@ -362,8 +408,46 @@ def get_grammar_notes(session: Session, user_id: int, search: str = "") -> list[
             (func.lower(GrammarNote.title).like(search_stripped)) |
             (func.lower(GrammarNote.content).like(search_stripped))
         )
-    statement = statement.order_by(GrammarNote.created_at.desc(), GrammarNote.id.desc())
+    statement = statement.order_by(GrammarNote.display_order.asc(), GrammarNote.created_at.desc(), GrammarNote.id.desc())
     return list(session.scalars(statement))
+
+
+def reorder_grammar_note(session: Session, note_id: int, direction: str) -> None:
+    note = session.get(GrammarNote, note_id)
+    if not note:
+        return
+        
+    # Get all notes for this user, sorted in display order
+    notes = list(session.scalars(
+        select(GrammarNote)
+        .where(GrammarNote.user_id == note.user_id)
+        .order_by(GrammarNote.display_order.asc(), GrammarNote.created_at.desc(), GrammarNote.id.desc())
+    ))
+    
+    # Find current note index
+    try:
+        idx = next(i for i, n in enumerate(notes) if n.id == note_id)
+    except StopIteration:
+        return
+        
+    if direction == "up" and idx > 0:
+        other_idx = idx - 1
+    elif direction == "down" and idx < len(notes) - 1:
+        other_idx = idx + 1
+    else:
+        return
+        
+    other_note = notes[other_idx]
+    
+    # Normalize display_orders to sequential indexes (0, 1, 2, ...) to ensure clean swaps
+    for i, n in enumerate(notes):
+        n.display_order = i
+        
+    # Swap display_order
+    notes[idx].display_order = other_idx
+    other_note.display_order = idx
+    
+    session.commit()
 
 
 def create_grammar_note(session: Session, user_id: int, title: str, content: str) -> GrammarNote:

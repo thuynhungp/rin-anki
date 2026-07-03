@@ -6,6 +6,7 @@ for mod in list(sys.modules.keys()):
     if mod.startswith("services.") or mod == "services":
         sys.modules.pop(mod, None)
 
+from datetime import datetime
 import random
 import pandas as pd
 import streamlit as st
@@ -35,15 +36,12 @@ from services.database import (
     create_grammar_note,
     update_grammar_note,
     delete_grammar_note,
+    reorder_grammar_note,
 )
 
 st.set_page_config(page_title="Rin Anki", page_icon="📚", layout="wide")
 
-@st.cache_resource
-def run_db_initialization():
-    init_db()
-
-run_db_initialization()
+init_db()
 
 THEMES = {
     "Dịu mắt": {
@@ -307,8 +305,8 @@ def vocabulary_frame(session, deck_id: int, search: str = "") -> pd.DataFrame:
             "id": index + 1,
             "word": row.word,
             "meaning": row.meaning,
-            "example": row.example,
             "note": row.note,
+            "example": row.example,
         }
         if is_kr:
             conj = row.conjugation_data
@@ -329,6 +327,46 @@ def vocabulary_frame(session, deck_id: int, search: str = "") -> pd.DataFrame:
     return frame
 
 
+def vocabulary_by_language_frame(session, user_id: int, language: str, search: str = "") -> pd.DataFrame:
+    statement = (
+        select(Vocabulary)
+        .join(Deck)
+        .where(Deck.user_id == user_id, Vocabulary.language == language)
+        .order_by(Vocabulary.created_at.asc(), Vocabulary.id.asc())
+    )
+    rows = session.scalars(statement).all()
+    
+    is_kr = language == "KR"
+    
+    frame_data = []
+    for index, row in enumerate(rows):
+        item = {
+            "db_id": row.id,
+            "id": index + 1,
+            "Chủ đề": row.deck.name,
+            "word": row.word,
+            "meaning": row.meaning,
+            "note": row.note,
+            "example": row.example,
+        }
+        if is_kr:
+            conj = row.conjugation_data
+            item["conjugation_a_eo_yeo"] = conj.get("a_eo_yeo", "")
+            item["conjugation_eun_neun"] = conj.get("eun_neun", "")
+            item["conjugation_eu_ni_kka"] = conj.get("eu_ni_kka", "")
+        frame_data.append(item)
+        
+    frame = pd.DataFrame(frame_data)
+    
+    if search and not frame.empty:
+        search_cols = ["word", "meaning", "example", "note", "Chủ đề"]
+        if is_kr:
+            search_cols.extend(["conjugation_a_eo_yeo", "conjugation_eun_neun", "conjugation_eu_ni_kka"])
+        search_cols = [c for c in search_cols if c in frame.columns]
+        mask = frame[search_cols].astype(str).apply(lambda col: col.str.contains(search, case=False, na=False)).any(axis=1)
+        frame = frame[mask]
+    return frame
+
 
 def form_input_ui(session, deck: Deck) -> None:
     st.caption(f"Ngôn ngữ của chủ đề: {deck.language}")
@@ -336,8 +374,8 @@ def form_input_ui(session, deck: Deck) -> None:
         cols = st.columns([2, 3])
         word = cols[0].text_input("Từ")
         meaning = cols[1].text_input("Nghĩa")
-        example = st.text_area("Ví dụ")
         note = st.text_area("Ghi chú")
+        example = st.text_area("Ví dụ")
         submitted = st.form_submit_button("Thêm từ vựng")
 
     if submitted:
@@ -529,18 +567,23 @@ def ai_import_ui(session, deck: Deck) -> None:
                         // Listen globally on the parent window's document to catch Ctrl+V anywhere
                         try {
                             if (window.parent && window.parent.document) {
-                                // Prevent duplicates by removing the previous handler stored on parent window
+                                // Prevent duplicates by removing previous handlers stored on parent window
                                 if (window.parent.__rin_anki_paste_handler__) {
                                     window.parent.document.removeEventListener('paste', window.parent.__rin_anki_paste_handler__);
-                                    console.log("Previous global paste handler removed from parent document.");
+                                }
+                                if (window.parent.__rin_anki_vocab_paste_handler__) {
+                                    window.parent.document.removeEventListener('paste', window.parent.__rin_anki_vocab_paste_handler__);
+                                }
+                                if (window.parent.__rin_anki_note_paste_handler__) {
+                                    window.parent.document.removeEventListener('paste', window.parent.__rin_anki_note_paste_handler__);
                                 }
                                 
                                 // Save current handler reference globally
-                                window.parent.__rin_anki_paste_handler__ = handlePaste;
+                                window.parent.__rin_anki_vocab_paste_handler__ = handlePaste;
                                 
                                 // Register new handler
                                 window.parent.document.addEventListener('paste', handlePaste);
-                                console.log("New global paste listener registered on parent document.");
+                                console.log("New global vocab paste listener registered on parent document.");
                             }
                         } catch (err) {
                             console.error("Global paste listener attachment failed:", err);
@@ -659,15 +702,36 @@ def word_list_screen() -> None:
     st.title("Danh sách từ")
 
     with SessionLocal() as session:
-        deck = deck_selector(session, user["id"], key="list_deck_id", label="Lọc theo chủ đề")
-        if deck is None:
-            return
-
-        search = st.text_input("Tìm kiếm trong chủ đề")
+        filter_mode = st.radio("Chế độ lọc", ["Theo chủ đề", "Theo ngôn ngữ"], horizontal=True)
+        
+        deck = None
+        selected_lang = None
+        current_lang = ""
+        
+        if filter_mode == "Theo chủ đề":
+            deck = deck_selector(session, user["id"], key="list_deck_id", label="Lọc theo chủ đề")
+            if deck is None:
+                return
+            current_lang = deck.language
+            search = st.text_input("Tìm kiếm trong chủ đề")
+        else:
+            allowed_langs = get_allowed_languages(user["name"])
+            selected_lang = st.selectbox("Chọn ngôn ngữ", allowed_langs, key="list_language")
+            current_lang = selected_lang
+            search = st.text_input(f"Tìm kiếm từ tiếng {selected_lang}")
         
         # Smart conjugation check and bulk update UI for Korean decks
-        if deck.language == "KR":
-            all_vocabs = deck.vocabulary
+        if current_lang == "KR":
+            if filter_mode == "Theo chủ đề":
+                all_vocabs = deck.vocabulary
+            else:
+                statement = (
+                    select(Vocabulary)
+                    .join(Deck)
+                    .where(Deck.user_id == user["id"], Vocabulary.language == "KR")
+                )
+                all_vocabs = list(session.scalars(statement).all())
+                
             unconjugated_vocabs = []
             for vocab in all_vocabs:
                 word = vocab.word.strip()
@@ -724,16 +788,20 @@ def word_list_screen() -> None:
                             session.commit()
                             st.success(f"Đã cập nhật thành công {updated_count} từ!")
                             rerun()
-
-        frame = vocabulary_frame(session, deck.id, search)
+ 
+        if filter_mode == "Theo chủ đề":
+            frame = vocabulary_frame(session, deck.id, search)
+        else:
+            frame = vocabulary_by_language_frame(session, user["id"], selected_lang, search)
+            
         display_frame = frame.drop(columns=["db_id"]) if "db_id" in frame.columns else frame
-        if deck.language == "KR" and "note" in display_frame.columns:
+        if current_lang == "KR" and "note" in display_frame.columns:
             display_frame = display_frame.drop(columns=["note"])
         display_custom_table(display_frame)
-
+ 
         if frame.empty:
             return
-
+ 
         st.subheader("Sửa hoặc xóa từ")
         vocab_id = st.selectbox(
             "Chọn từ",
@@ -743,15 +811,15 @@ def word_list_screen() -> None:
         vocab = session.get(Vocabulary, int(vocab_id))
         if vocab is None:
             return
-
+ 
         with st.form("edit-word"):
             word = st.text_input("Từ", value=vocab.word)
             meaning = st.text_input("Nghĩa", value=vocab.meaning)
-            example = st.text_area("Ví dụ", value=vocab.example)
             note = st.text_area("Ghi chú", value=vocab.note)
+            example = st.text_area("Ví dụ", value=vocab.example)
             
             # Show and edit conjugation forms for Korean deck
-            if deck.language == "KR":
+            if vocab.language == "KR":
                 conj = vocab.conjugation_data
                 c_a_eo_yeo = st.text_input("아/어/여", value=conj.get("a_eo_yeo", ""))
                 c_eun_neun = st.text_input("은/는", value=conj.get("eun_neun", ""))
@@ -760,14 +828,14 @@ def word_list_screen() -> None:
             save, delete_word = st.columns(2)
             should_save = save.form_submit_button("Lưu")
             should_delete = delete_word.form_submit_button("Xóa")
-
+ 
         if should_save:
-            vocab.language = deck.language
+            vocab.language = vocab.deck.language
             vocab.word = word.strip()
             vocab.meaning = meaning.strip()
             vocab.example = example.strip()
             vocab.note = note.strip()
-            if deck.language == "KR":
+            if vocab.language == "KR":
                 vocab.conjugation_data = {
                     "a_eo_yeo": c_a_eo_yeo.strip(),
                     "eun_neun": c_eun_neun.strip(),
@@ -864,13 +932,35 @@ def grammar_notes_screen() -> None:
     assert user is not None
     st.title("📚 Ghi chú ngữ pháp")
 
+    if st.session_state.get("note_success_msg"):
+        st.success(st.session_state.note_success_msg)
+        st.session_state.pop("note_success_msg", None)
+
     tab_new, tab_search = st.tabs(["📝 Ghi chú mới", "🔍 Tìm kiếm ghi chú"])
 
     with SessionLocal() as session:
         # --- TAB 1: NEW NOTE ---
         with tab_new:
             st.subheader("Tạo ghi chú ngữ pháp mới")
-            mode = st.radio("Cách thêm ghi chú", ["Quét từ ảnh chụp", "Tự nhập tay"], horizontal=True, key="note_input_mode")
+            
+            if "note_uploader_key" not in st.session_state:
+                st.session_state.note_uploader_key = 0
+
+            def on_mode_change():
+                st.session_state.pop("new_note_title", None)
+                st.session_state.pop("new_note_content", None)
+                st.session_state.pop("new_note_preview_title", None)
+                st.session_state.pop("new_note_preview_content", None)
+                st.session_state.pop("pasted_note_image_base64", None)
+                st.session_state.note_uploader_key += 1
+
+            mode = st.radio(
+                "Cách thêm ghi chú",
+                ["Quét từ ảnh chụp", "Tự nhập tay"],
+                horizontal=True,
+                key="note_input_mode",
+                on_change=on_mode_change
+            )
 
             # Helper states
             if "new_note_title" not in st.session_state:
@@ -898,7 +988,7 @@ def grammar_notes_screen() -> None:
 
                 col_u, col_p = st.columns(2, vertical_alignment="bottom")
                 with col_u:
-                    uploaded_note_img = st.file_uploader("Tải ảnh ghi chú lên", type=["jpg", "jpeg", "png", "webp"], key="upload_note_img")
+                    uploaded_note_img = st.file_uploader("Tải ảnh ghi chú lên", type=["jpg", "jpeg", "png", "webp"], key=f"upload_note_img_{st.session_state.note_uploader_key}")
                 with col_p:
                     st.components.v1.html(
                         """
@@ -937,6 +1027,7 @@ def grammar_notes_screen() -> None:
                             } catch (e) { console.error(e); }
 
                             const handlePaste = (e) => {
+                                console.log("Note paste event triggered on element", e.currentTarget, e);
                                 const items = (e.clipboardData || e.originalEvent.clipboardData).items;
                                 for (let i = 0; i < items.length; i++) {
                                     if (items[i].type.indexOf('image') !== -1) {
@@ -951,9 +1042,28 @@ def grammar_notes_screen() -> None:
                                                     'value'
                                                 ).set;
                                                 nativeTextAreaValueSetter.call(textarea, base64Data);
+                                                
+                                                // 1. Dispatch input event to update React local state
                                                 textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                                                
+                                                // 2. Dispatch change event
                                                 textarea.dispatchEvent(new Event('change', { bubbles: true }));
+                                                
+                                                // 3. Dispatch blur event to trigger Streamlit's state sync to Python
                                                 textarea.dispatchEvent(new Event('blur', { bubbles: true }));
+                                                
+                                                // 4. Dispatch Ctrl+Enter keydown event to force submission
+                                                const keydownEvent = new KeyboardEvent('keydown', {
+                                                    key: 'Enter',
+                                                    code: 'Enter',
+                                                    keyCode: 13,
+                                                    which: 13,
+                                                    ctrlKey: true,
+                                                    metaKey: true,
+                                                    bubbles: true,
+                                                    cancelable: true
+                                                });
+                                                textarea.dispatchEvent(keydownEvent);
                                             }
                                         };
                                         reader.readAsDataURL(blob);
@@ -962,7 +1072,32 @@ def grammar_notes_screen() -> None:
                                     }
                                 }
                             };
+                            
+                            // Listen locally in the iframe
                             zone.addEventListener('paste', handlePaste);
+
+                            // Listen globally on the parent window's document to catch Ctrl+V anywhere
+                            try {
+                                if (window.parent && window.parent.document) {
+                                    // Remove any previous note or vocab paste handlers
+                                    if (window.parent.__rin_anki_paste_handler__) {
+                                        window.parent.document.removeEventListener('paste', window.parent.__rin_anki_paste_handler__);
+                                    }
+                                    if (window.parent.__rin_anki_vocab_paste_handler__) {
+                                        window.parent.document.removeEventListener('paste', window.parent.__rin_anki_vocab_paste_handler__);
+                                    }
+                                    if (window.parent.__rin_anki_note_paste_handler__) {
+                                        window.parent.document.removeEventListener('paste', window.parent.__rin_anki_note_paste_handler__);
+                                    }
+                                    
+                                    // Register current handler
+                                    window.parent.__rin_anki_note_paste_handler__ = handlePaste;
+                                    window.parent.document.addEventListener('paste', handlePaste);
+                                    console.log("New global note paste listener registered on parent document.");
+                                }
+                            } catch (err) {
+                                console.error("Global paste listener attachment failed:", err);
+                            }
                         </script>
                         """,
                         height=75,
@@ -998,14 +1133,16 @@ def grammar_notes_screen() -> None:
                                 first_line = lines[0].strip()
                                 parsed_title = first_line.lstrip("#").strip()
                                 if parsed_title:
-                                    st.session_state.new_note_title = parsed_title
+                                    import re
+                                    cleaned_title = re.sub(r'^(ngữ\s+pháp\s*)', '', parsed_title, flags=re.IGNORECASE).strip()
+                                    st.session_state.new_note_title = cleaned_title
                                     st.session_state.new_note_content = "\n".join(lines[1:]).strip()
                                     title_found = True
                             
                             if not title_found:
                                 st.session_state.new_note_content = extracted_markdown
                                 now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
-                                st.session_state.new_note_title = f"Ghi chú ngữ pháp {now_str}"
+                                st.session_state.new_note_title = f"Ghi chú {now_str}"
                             st.session_state.new_note_preview_title = st.session_state.new_note_title
                             st.session_state.new_note_preview_content = st.session_state.new_note_content
                             st.rerun()
@@ -1054,20 +1191,22 @@ def grammar_notes_screen() -> None:
                         st.warning("Vui lòng điền tiêu đề ghi chú.")
                     else:
                         create_grammar_note(session, user["id"], st.session_state.new_note_title, st.session_state.new_note_content)
-                        st.success("Đã lưu ghi chú thành công!")
+                        st.session_state.note_success_msg = "Đã lưu ghi chú thành công!"
                         # Reset states
-                        st.session_state.new_note_title = ""
-                        st.session_state.new_note_content = ""
+                        st.session_state.pop("new_note_title", None)
+                        st.session_state.pop("new_note_content", None)
                         st.session_state.pop("new_note_preview_title", None)
                         st.session_state.pop("new_note_preview_content", None)
                         st.session_state.pop("pasted_note_image_base64", None)
+                        st.session_state.note_uploader_key += 1
                         st.rerun()
                 if right_btn.button("Hủy bỏ", use_container_width=True):
-                    st.session_state.new_note_title = ""
-                    st.session_state.new_note_content = ""
+                    st.session_state.pop("new_note_title", None)
+                    st.session_state.pop("new_note_content", None)
                     st.session_state.pop("new_note_preview_title", None)
                     st.session_state.pop("new_note_preview_content", None)
                     st.session_state.pop("pasted_note_image_base64", None)
+                    st.session_state.note_uploader_key += 1
                     st.rerun()
 
         # --- TAB 2: SEARCH NOTES ---
@@ -1099,6 +1238,28 @@ def grammar_notes_screen() -> None:
                             if st.button(f"📓 {note.title}", key=f"menu_note_{note.id}", use_container_width=True, type=btn_type):
                                 st.session_state.selected_note_id = note.id
                                 st.rerun()
+
+                    # Reordering controls
+                    if selected_note:
+                        st.write("---")
+                        st.caption("Thứ tự hiển thị:")
+                        col_up, col_down = st.columns(2)
+                        
+                        notes_list = list(notes)
+                        try:
+                            idx = next(i for i, n in enumerate(notes_list) if n.id == selected_note.id)
+                            can_up = idx > 0
+                            can_down = idx < len(notes_list) - 1
+                        except StopIteration:
+                            can_up = False
+                            can_down = False
+                            
+                        if col_up.button("⬆️ Lên", disabled=not can_up, use_container_width=True):
+                            reorder_grammar_note(session, selected_note.id, "up")
+                            rerun()
+                        if col_down.button("⬇️ Xuống", disabled=not can_down, use_container_width=True):
+                            reorder_grammar_note(session, selected_note.id, "down")
+                            rerun()
             
             with col_content:
                 if selected_note is not None:
@@ -1326,15 +1487,13 @@ def quiz_screen() -> None:
                             is_correct = True
                         elif quiz["deck_language"] == "KR":
                             # For Korean, also check if it matches conjugation forms
-                            vocab_item = session.get(Vocabulary, card["id"])
-                            if vocab_item:
-                                conj = vocab_item.conjugation_data
-                                for k, val in conj.items():
-                                    if val and ans_clean == val.strip():
-                                        is_correct = True
-                                        label = {"a_eo_yeo": "아/어/여", "eun_neun": "은/는", "eu_ni_kka": "(으)니까"}.get(k, k)
-                                        matched_info = f" (Khớp với dạng chia {label}: {val})"
-                                        break
+                            conj = card.get("conjugation_data", {})
+                            for k, val in conj.items():
+                                if val and ans_clean == val.strip():
+                                    is_correct = True
+                                    label = {"a_eo_yeo": "아/어/여", "eun_neun": "은/는", "eu_ni_kka": "(으)니까"}.get(k, k)
+                                    matched_info = f" (Khớp với dạng chia {label}: {val})"
+                                    break
                         
                         st.session_state.quiz_eval = {
                             "is_correct": is_correct,
@@ -1367,23 +1526,21 @@ def quiz_screen() -> None:
         if not is_keyboard_quiz or st.session_state.get("quiz_eval") is None:
             st.markdown(f"### {back_text}")
         
-        if card["example"]:
-            st.write(card["example"])
         if card["note"]:
             st.info(card["note"])
+        if card["example"]:
+            st.write(card["example"])
 
         # Display conjugation columns if it's a Korean card in Korean deck
         if quiz["deck_language"] == "KR":
-            vocab_item = session.get(Vocabulary, card["id"])
-            if vocab_item:
-                conj = vocab_item.conjugation_data
-                if conj.get("a_eo_yeo") or conj.get("eun_neun") or conj.get("eu_ni_kka"):
-                    st.write("---")
-                    st.caption("Các dạng chia động từ (Hàn):")
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("아/어/여", conj.get("a_eo_yeo") or "—")
-                    c2.metric("은/는", conj.get("eun_neun") or "—")
-                    c3.metric("(으)니까", conj.get("eu_ni_kka") or "—")
+            conj = card.get("conjugation_data", {})
+            if conj.get("a_eo_yeo") or conj.get("eun_neun") or conj.get("eu_ni_kka"):
+                st.write("---")
+                st.caption("Các dạng chia động từ (Hàn):")
+                c1, c2, c3 = st.columns(3)
+                c1.metric("아/어/여", conj.get("a_eo_yeo") or "—")
+                c2.metric("은/는", conj.get("eun_neun") or "—")
+                c3.metric("(으)니까", conj.get("eu_ni_kka") or "—")
 
         left, middle, right = st.columns(3)
         actions = [
@@ -1404,6 +1561,54 @@ def quiz_screen() -> None:
                 quiz["show_answer"] = False
                 st.session_state.pop("quiz_eval", None)
                 rerun()
+
+        # Keyboard listener for rating hotkeys 1, 2, 3
+        st.components.v1.html(
+            """
+            <script>
+                const handleKeyDown = (e) => {
+                    const activeEl = window.parent.document.activeElement;
+                    if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.isContentEditable)) {
+                        return;
+                    }
+                    
+                    const h1s = Array.from(window.parent.document.querySelectorAll('h1'));
+                    const isQuizPage = h1s.some(h1 => h1.innerText && h1.innerText.trim() === "Quiz");
+                    if (!isQuizPage) {
+                        return;
+                    }
+                    
+                    if (e.key === '1' || e.key === '2' || e.key === '3') {
+                        const buttons = Array.from(window.parent.document.querySelectorAll('button'));
+                        let targetText = "";
+                        if (e.key === '1') targetText = "Chưa nhớ";
+                        else if (e.key === '2') targetText = "Nhớ sơ sơ";
+                        else if (e.key === '3') targetText = "Nhớ rồi";
+                        
+                        const targetBtn = buttons.find(btn => btn.innerText && btn.innerText.includes(targetText));
+                        if (targetBtn) {
+                            targetBtn.click();
+                            e.preventDefault();
+                        }
+                    }
+                };
+
+                try {
+                    if (window.parent) {
+                        if (window.parent.__quiz_keydown_handler__) {
+                            window.parent.removeEventListener('keydown', window.parent.__quiz_keydown_handler__, true);
+                        }
+                        window.parent.__quiz_keydown_handler__ = handleKeyDown;
+                        window.parent.addEventListener('keydown', handleKeyDown, true);
+                        console.log("Registered global quiz hotkeys (1, 2, 3).");
+                    }
+                } catch (err) {
+                    console.error("Failed to attach quiz keydown listener:", err);
+                }
+            </script>
+            """,
+            height=0,
+        )
 
 
 
@@ -1557,6 +1762,14 @@ def render_top_bar() -> str:
 
     if st.query_params.get("menu") != selected_menu:
         st.query_params["menu"] = selected_menu
+        # Reset the grammar note states on menu tab switch
+        st.session_state.pop("new_note_title", None)
+        st.session_state.pop("new_note_content", None)
+        st.session_state.pop("new_note_preview_title", None)
+        st.session_state.pop("new_note_preview_content", None)
+        st.session_state.pop("pasted_note_image_base64", None)
+        if "note_uploader_key" in st.session_state:
+            st.session_state.note_uploader_key += 1
         rerun()
 
     return selected_menu
