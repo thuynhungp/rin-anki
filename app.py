@@ -42,7 +42,11 @@ from services.database import (
 
 st.set_page_config(page_title="Rin Anki", page_icon="📚", layout="wide")
 
-init_db()
+@st.cache_resource
+def run_init_db():
+    init_db()
+
+run_init_db()
 
 THEMES = {
     "Dịu mắt": {
@@ -1355,8 +1359,9 @@ def quiz_screen() -> None:
         if quiz and quiz.get("cards") and quiz["index"] >= len(quiz["cards"]):
             # Save results to DB if not saved yet
             if not quiz.get("saved"):
-                with SessionLocal() as session:
-                    save_quiz_results(session, quiz.get("results", []))
+                with st.spinner("Đang lưu kết quả quiz..."):
+                    with SessionLocal() as session:
+                        save_quiz_results(session, quiz.get("results", []))
                 quiz["saved"] = True
             
             # Calculate mark
@@ -1430,7 +1435,8 @@ def quiz_screen() -> None:
 
             question_count = st.number_input("Số câu hỏi", min_value=1, max_value=100, value=20)
             if st.button("Bắt đầu quiz"):
-                cards = due_vocabulary_cards(session, deck.id, int(question_count))
+                with st.spinner("Đang tải danh sách câu hỏi..."):
+                    cards = due_vocabulary_cards(session, deck.id, int(question_count))
                 if not cards:
                     st.info("Hiện chưa có thẻ nào đến hạn ôn.")
                 else:
@@ -1466,8 +1472,9 @@ def quiz_screen() -> None:
     with col_cancel:
         if st.button("Hủy quiz", use_container_width=True):
             if quiz.get("results") and not quiz.get("saved"):
-                with SessionLocal() as session:
-                    save_quiz_results(session, quiz["results"])
+                with st.spinner("Đang lưu tiến trình..."):
+                    with SessionLocal() as session:
+                        save_quiz_results(session, quiz["results"])
                 quiz["saved"] = True
             st.session_state.pop("quiz", None)
             st.session_state.pop("quiz_eval", None)
@@ -1819,21 +1826,29 @@ def main() -> None:
 
     if current_user() is None:
         select_user_screen()
-        return
-
-    page = render_top_bar()
-    if page == "Thêm từ vựng":
-        add_vocabulary_screen()
-    elif page == "Danh sách từ":
-        word_list_screen()
-    elif page == "Chủ đề":
-        topic_screen()
-    elif page == "Ghi chú ngữ pháp":
-        grammar_notes_screen()
-    elif page == "Quiz":
-        quiz_screen()
     else:
-        hdsd_screen()
+        page = render_top_bar()
+        if page == "Thêm từ vựng":
+            add_vocabulary_screen()
+        elif page == "Danh sách từ":
+            word_list_screen()
+        elif page == "Chủ đề":
+            topic_screen()
+        elif page == "Ghi chú ngữ pháp":
+            grammar_notes_screen()
+        elif page == "Quiz":
+            quiz_screen()
+        else:
+            hdsd_screen()
+
+    # Footer version number
+    st.markdown("---")
+    st.markdown(
+        "<div style='text-align: center; color: var(--text-color); opacity: 0.5; font-size: 0.8rem; margin-top: 24px; margin-bottom: 8px;'>"
+        "Rin Anki v20260704 • Phát triển bởi Rin"
+        "</div>",
+        unsafe_allow_html=True
+    )
 
 
 if __name__ == "__main__":
