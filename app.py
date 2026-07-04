@@ -32,6 +32,7 @@ from services.database import (
     get_users,
     init_db,
     update_schedule,
+    save_quiz_results,
     get_grammar_notes,
     create_grammar_note,
     update_grammar_note,
@@ -144,6 +145,16 @@ def apply_theme(theme_name: str) -> None:
         div[data-baseweb="menu"] li:hover {{
             background-color: var(--primary-color) !important;
             color: var(--background-color) !important;
+        }}
+
+        /* Prevent global fade out / gray out of components during rerun / loading */
+        [data-stale="true"] {{
+            opacity: 1 !important;
+            filter: none !important;
+        }}
+        [data-stale="true"] * {{
+            opacity: 1 !important;
+            filter: none !important;
         }}
         </style>
         """,
@@ -1339,9 +1350,72 @@ def quiz_screen() -> None:
     quiz = st.session_state.get("quiz")
     is_active = quiz and "cards" in quiz and quiz["index"] < len(quiz["cards"])
 
-    with SessionLocal() as session:
-        if not is_active:
-            # Show configuration UI
+    if not is_active:
+        # If quiz is finished, show completion screen
+        if quiz and quiz.get("cards") and quiz["index"] >= len(quiz["cards"]):
+            # Save results to DB if not saved yet
+            if not quiz.get("saved"):
+                with SessionLocal() as session:
+                    save_quiz_results(session, quiz.get("results", []))
+                quiz["saved"] = True
+            
+            # Calculate mark
+            results = quiz.get("results", [])
+            total = len(quiz["cards"])
+            remembered_cnt = sum(1 for r in results if r["result"] == "remembered")
+            partial_cnt = sum(1 for r in results if r["result"] == "partial")
+            forgot_cnt = sum(1 for r in results if r["result"] == "forgot")
+            
+            score = (remembered_cnt * 10 + partial_cnt * 5) / total if total > 0 else 0
+            
+            st.balloons()
+            
+            st.markdown(
+                f"""
+                <div style='border:1px solid rgba(128, 128, 128, 0.2); border-radius:8px; padding:24px; text-align:center; background-color: var(--secondary-background-color); margin-bottom: 24px;'>
+                    <h2 style='color: var(--primary-color); margin-bottom: 8px;'>🎉 Hoàn thành lượt quiz!</h2>
+                    <div style='font-size:48px; font-weight:700; color: var(--text-color);'>{score:.1f} <span style='font-size:24px; font-weight:normal;'>/ 10</span></div>
+                    <div style='margin-top:12px; font-size:16px; color: var(--text-color); opacity: 0.8;'>
+                        😄 Đã nhớ: <b>{remembered_cnt}</b> | 🤔 Nhớ sơ sơ: <b>{partial_cnt}</b> | 😵 Chưa nhớ: <b>{forgot_cnt}</b>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            
+            # Show review list
+            review_list = [r for r in results if r["result"] in ("forgot", "partial")]
+            if review_list:
+                st.markdown("### 🔍 Danh sách từ cần ôn lại")
+                
+                # Prepare list data
+                review_data = []
+                for item in review_list:
+                    card = item["card"]
+                    side_str = "VN ➔ KR" if card["reversed"] else f"{quiz['deck_language']} ➔ VN"
+                    status_str = "😵 Chưa nhớ" if item["result"] == "forgot" else "🤔 Nhớ sơ sơ"
+                    
+                    review_data.append({
+                        "Từ": card["word"],
+                        "Nghĩa": card["meaning"],
+                        "Chiều ôn": side_str,
+                        "Trạng thái": status_str,
+                        "Ví dụ": card["example"],
+                        "Ghi chú": card["note"]
+                    })
+                
+                display_custom_table(pd.DataFrame(review_data), localize=False)
+            else:
+                st.success("Tuyệt vời! Bạn đã thuộc tất cả các từ trong lượt quiz này! 🥳")
+
+            if st.button("Xóa lượt quiz & Quay lại", use_container_width=True):
+                st.session_state.pop("quiz", None)
+                st.session_state.pop("quiz_eval", None)
+                st.rerun()
+            return
+
+        # Otherwise, show configuration UI (needs session)
+        with SessionLocal() as session:
             deck = deck_selector(session, user["id"], key="quiz_deck_id", label="Chủ đề")
             if deck is None:
                 return
@@ -1367,248 +1441,196 @@ def quiz_screen() -> None:
                         "index": 0,
                         "show_answer": False,
                         "results": [],
+                        "saved": False,
                     }
                     st.session_state.pop("quiz_eval", None)
                     rerun()
-            
-            # If quiz is finished, show completion screen
-            if quiz and quiz.get("cards") and quiz["index"] >= len(quiz["cards"]):
-                # Calculate mark
-                results = quiz.get("results", [])
-                total = len(quiz["cards"])
-                remembered_cnt = sum(1 for r in results if r["result"] == "remembered")
-                partial_cnt = sum(1 for r in results if r["result"] == "partial")
-                forgot_cnt = sum(1 for r in results if r["result"] == "forgot")
-                
-                score = (remembered_cnt * 10 + partial_cnt * 5) / total if total > 0 else 0
-                
-                st.balloons()
-                
-                st.markdown(
-                    f"""
-                    <div style='border:1px solid rgba(128, 128, 128, 0.2); border-radius:8px; padding:24px; text-align:center; background-color: var(--secondary-background-color); margin-bottom: 24px;'>
-                        <h2 style='color: var(--primary-color); margin-bottom: 8px;'>🎉 Hoàn thành lượt quiz!</h2>
-                        <div style='font-size:48px; font-weight:700; color: var(--text-color);'>{score:.1f} <span style='font-size:24px; font-weight:normal;'>/ 10</span></div>
-                        <div style='margin-top:12px; font-size:16px; color: var(--text-color); opacity: 0.8;'>
-                            😄 Đã nhớ: <b>{remembered_cnt}</b> | 🤔 Nhớ sơ sơ: <b>{partial_cnt}</b> | 😵 Chưa nhớ: <b>{forgot_cnt}</b>
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-                
-                # Show review list
-                review_list = [r for r in results if r["result"] in ("forgot", "partial")]
-                if review_list:
-                    st.markdown("### 🔍 Danh sách từ cần ôn lại")
-                    
-                    # Prepare list data
-                    review_data = []
-                    for item in review_list:
-                        card = item["card"]
-                        side_str = "VN ➔ KR" if card["reversed"] else f"{quiz['deck_language']} ➔ VN"
-                        status_str = "😵 Chưa nhớ" if item["result"] == "forgot" else "🤔 Nhớ sơ sơ"
-                        
-                        review_data.append({
-                            "Từ": card["word"],
-                            "Nghĩa": card["meaning"],
-                            "Chiều ôn": side_str,
-                            "Trạng thái": status_str,
-                            "Ví dụ": card["example"],
-                            "Ghi chú": card["note"]
-                        })
-                    
-                    display_custom_table(pd.DataFrame(review_data), localize=False)
-                else:
-                    st.success("Tuyệt vời! Bạn đã thuộc tất cả các từ trong lượt quiz này! 🥳")
+        return
 
-                if st.button("Xóa lượt quiz & Quay lại", use_container_width=True):
-                    st.session_state.pop("quiz", None)
-                    st.session_state.pop("quiz_eval", None)
-                    st.rerun()
+    # Active quiz UI
+    card = quiz["cards"][quiz["index"]]
+    
+    # Reverse direction logic
+    if card["reversed"]:
+        front_text = card["meaning"]
+        caption = f"Dịch sang {quiz['deck_language']}"
+        back_text = card["word"]
+    else:
+        front_text = card["word"]
+        caption = quiz['deck_language']
+        back_text = card["meaning"]
+
+    col_header, col_cancel = st.columns([6, 1])
+    with col_header:
+        st.caption(f"Câu {quiz['index'] + 1} / {len(quiz['cards'])}")
+    with col_cancel:
+        if st.button("Hủy quiz", use_container_width=True):
+            if quiz.get("results") and not quiz.get("saved"):
+                with SessionLocal() as session:
+                    save_quiz_results(session, quiz["results"])
+                quiz["saved"] = True
+            st.session_state.pop("quiz", None)
+            st.session_state.pop("quiz_eval", None)
+            rerun()
+
+    st.markdown(
+        f"""
+        <div style='border:1px solid rgba(128, 128, 128, 0.2); border-radius:8px; padding:32px; text-align:center; background-color: var(--secondary-background-color);'>
+            <div style='font-size:48px; font-weight:700; color: var(--text-color);'>{front_text}</div>
+            <div style='margin-top:8px; color: var(--text-color); opacity: 0.7;'>{caption}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    is_keyboard_quiz = card["reversed"] and quiz.get("use_input")
+
+    if is_keyboard_quiz:
+        # Type answer quiz
+        if not quiz["show_answer"]:
+            with st.form("quiz_answer_form", clear_on_submit=True):
+                user_ans = st.text_input("Nhập câu trả lời của bạn:")
+                btn_check = st.form_submit_button("Kiểm tra đáp án")
+            
+            # Option to show answer without typing
+            if st.button("Hiện đáp án trực tiếp", use_container_width=True):
+                quiz["show_answer"] = True
+                st.session_state.quiz_eval = None
+                rerun()
+            
+            if btn_check:
+                ans_clean = user_ans.strip()
+                if not ans_clean:
+                    st.warning("Vui lòng nhập câu trả lời trước khi kiểm tra.")
+                else:
+                    is_correct = False
+                    matched_info = ""
+                    
+                    if ans_clean.lower() == back_text.strip().lower():
+                        is_correct = True
+                    elif quiz["deck_language"] == "KR":
+                        # For Korean, also check if it matches conjugation forms
+                        conj = card.get("conjugation_data", {})
+                        for k, val in conj.items():
+                            if val and ans_clean == val.strip():
+                                is_correct = True
+                                label = {"a_eo_yeo": "아/어/여", "eun_neun": "은/는", "eu_ni_kka": "(으)니까"}.get(k, k)
+                                matched_info = f" (Khớp với dạng chia {label}: {val})"
+                                break
+                    
+                    st.session_state.quiz_eval = {
+                        "is_correct": is_correct,
+                        "user_ans": ans_clean,
+                        "matched_info": matched_info,
+                    }
+                    quiz["show_answer"] = True
+                    rerun()
             return
 
-        # Active quiz UI
-        card = quiz["cards"][quiz["index"]]
-        
-        # Reverse direction logic
-        if card["reversed"]:
-            front_text = card["meaning"]
-            caption = f"Dịch sang {quiz['deck_language']}"
-            back_text = card["word"]
         else:
-            front_text = card["word"]
-            caption = quiz['deck_language']
-            back_text = card["meaning"]
-
-        col_header, col_cancel = st.columns([6, 1])
-        with col_header:
-            st.caption(f"Câu {quiz['index'] + 1} / {len(quiz['cards'])}")
-        with col_cancel:
-            if st.button("Hủy quiz", use_container_width=True):
-                st.session_state.pop("quiz", None)
-                st.session_state.pop("quiz_eval", None)
-                rerun()
-
-        st.markdown(
-            f"""
-            <div style='border:1px solid rgba(128, 128, 128, 0.2); border-radius:8px; padding:32px; text-align:center; background-color: var(--secondary-background-color);'>
-                <div style='font-size:48px; font-weight:700; color: var(--text-color);'>{front_text}</div>
-                <div style='margin-top:8px; color: var(--text-color); opacity: 0.7;'>{caption}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        is_keyboard_quiz = card["reversed"] and quiz.get("use_input")
-
-        if is_keyboard_quiz:
-            # Type answer quiz
-            if not quiz["show_answer"]:
-                with st.form("quiz_answer_form", clear_on_submit=True):
-                    user_ans = st.text_input("Nhập câu trả lời của bạn:")
-                    btn_check = st.form_submit_button("Kiểm tra đáp án")
-                
-                # Option to show answer without typing
-                if st.button("Hiện đáp án trực tiếp", use_container_width=True):
-                    quiz["show_answer"] = True
-                    st.session_state.quiz_eval = None
-                    rerun()
-                
-                if btn_check:
-                    ans_clean = user_ans.strip()
-                    if not ans_clean:
-                        st.warning("Vui lòng nhập câu trả lời trước khi kiểm tra.")
-                    else:
-                        is_correct = False
-                        matched_info = ""
-                        
-                        if ans_clean.lower() == back_text.strip().lower():
-                            is_correct = True
-                        elif quiz["deck_language"] == "KR":
-                            # For Korean, also check if it matches conjugation forms
-                            conj = card.get("conjugation_data", {})
-                            for k, val in conj.items():
-                                if val and ans_clean == val.strip():
-                                    is_correct = True
-                                    label = {"a_eo_yeo": "아/어/여", "eun_neun": "은/는", "eu_ni_kka": "(으)니까"}.get(k, k)
-                                    matched_info = f" (Khớp với dạng chia {label}: {val})"
-                                    break
-                        
-                        st.session_state.quiz_eval = {
-                            "is_correct": is_correct,
-                            "user_ans": ans_clean,
-                            "matched_info": matched_info,
-                        }
-                        quiz["show_answer"] = True
-                        rerun()
-                return
-
-            else:
-                # Answer phase showing evaluation
-                eval_data = st.session_state.get("quiz_eval")
-                if eval_data is not None:
-                    if eval_data["is_correct"]:
-                        st.success(f"🎉 **Đúng rồi!** Bạn nhập: `{eval_data['user_ans']}`{eval_data['matched_info']}")
-                    else:
-                        st.error(f"❌ **Chưa chính xác.** Bạn nhập: `{eval_data['user_ans']}`. Đáp án đúng phải là: `{back_text}`")
+            # Answer phase showing evaluation
+            eval_data = st.session_state.get("quiz_eval")
+            if eval_data is not None:
+                if eval_data["is_correct"]:
+                    st.success(f"🎉 **Đúng rồi!** Bạn nhập: `{eval_data['user_ans']}`{eval_data['matched_info']}")
                 else:
-                    st.info(f"Đáp án đúng: `{back_text}`")
-        else:
-            # Standard flashcard quiz
-            if not quiz["show_answer"]:
-                if st.button("Hiện đáp án", use_container_width=True):
-                    quiz["show_answer"] = True
-                    rerun()
-                return
-
-        # Back of card (Answer details)
-        if not is_keyboard_quiz or st.session_state.get("quiz_eval") is None:
-            st.markdown(f"### {back_text}")
-        
-        if card["note"]:
-            st.info(card["note"])
-        if card["example"]:
-            st.write(card["example"])
-
-        # Display conjugation columns if it's a Korean card in Korean deck
-        if quiz["deck_language"] == "KR":
-            conj = card.get("conjugation_data", {})
-            if conj.get("a_eo_yeo") or conj.get("eun_neun") or conj.get("eu_ni_kka"):
-                st.write("---")
-                st.caption("Các dạng chia động từ (Hàn):")
-                c1, c2, c3 = st.columns(3)
-                c1.metric("아/어/여", conj.get("a_eo_yeo") or "—")
-                c2.metric("은/는", conj.get("eun_neun") or "—")
-                c3.metric("(으)니까", conj.get("eu_ni_kka") or "—")
-
-        left, middle, right = st.columns(3)
-        actions = [
-            (left, "😵 Chưa nhớ", "forgot"),
-            (middle, "🤔 Nhớ sơ sơ", "partial"),
-            (right, "😄 Nhớ rồi", "remembered"),
-        ]
-        for column, label, result in actions:
-            if column.button(label, use_container_width=True):
-                update_schedule(session, card["id"], result, reversed=card.get("reversed", False))
-                if "results" not in quiz:
-                    quiz["results"] = []
-                quiz["results"].append({
-                    "card": card,
-                    "result": result
-                })
-                quiz["index"] += 1
-                quiz["show_answer"] = False
-                st.session_state.pop("quiz_eval", None)
+                    st.error(f"❌ **Chưa chính xác.** Bạn nhập: `{eval_data['user_ans']}`. Đáp án đúng phải là: `{back_text}`")
+            else:
+                st.info(f"Đáp án đúng: `{back_text}`")
+    else:
+        # Standard flashcard quiz
+        if not quiz["show_answer"]:
+            if st.button("Hiện đáp án", use_container_width=True):
+                quiz["show_answer"] = True
                 rerun()
+            return
 
-        # Keyboard listener for rating hotkeys 1, 2, 3
-        st.components.v1.html(
-            """
-            <script>
-                const handleKeyDown = (e) => {
-                    const activeEl = window.parent.document.activeElement;
-                    if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.isContentEditable)) {
-                        return;
-                    }
-                    
-                    const h1s = Array.from(window.parent.document.querySelectorAll('h1'));
-                    const isQuizPage = h1s.some(h1 => h1.innerText && h1.innerText.trim() === "Quiz");
-                    if (!isQuizPage) {
-                        return;
-                    }
-                    
-                    if (e.key === '1' || e.key === '2' || e.key === '3') {
-                        const buttons = Array.from(window.parent.document.querySelectorAll('button'));
-                        let targetText = "";
-                        if (e.key === '1') targetText = "Chưa nhớ";
-                        else if (e.key === '2') targetText = "Nhớ sơ sơ";
-                        else if (e.key === '3') targetText = "Nhớ rồi";
-                        
-                        const targetBtn = buttons.find(btn => btn.innerText && btn.innerText.includes(targetText));
-                        if (targetBtn) {
-                            targetBtn.click();
-                            e.preventDefault();
-                        }
-                    }
-                };
+    # Back of card (Answer details)
+    if not is_keyboard_quiz or st.session_state.get("quiz_eval") is None:
+        st.markdown(f"### {back_text}")
+    
+    if card["note"]:
+        st.info(card["note"])
+    if card["example"]:
+        st.write(card["example"])
 
-                try {
-                    if (window.parent) {
-                        if (window.parent.__quiz_keydown_handler__) {
-                            window.parent.removeEventListener('keydown', window.parent.__quiz_keydown_handler__, true);
-                        }
-                        window.parent.__quiz_keydown_handler__ = handleKeyDown;
-                        window.parent.addEventListener('keydown', handleKeyDown, true);
-                        console.log("Registered global quiz hotkeys (1, 2, 3).");
-                    }
-                } catch (err) {
-                    console.error("Failed to attach quiz keydown listener:", err);
+    # Display conjugation columns if it's a Korean card in Korean deck
+    if quiz["deck_language"] == "KR":
+        conj = card.get("conjugation_data", {})
+        if conj.get("a_eo_yeo") or conj.get("eun_neun") or conj.get("eu_ni_kka"):
+            st.write("---")
+            st.caption("Các dạng chia động từ (Hàn):")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("아/어/여", conj.get("a_eo_yeo") or "—")
+            c2.metric("은/는", conj.get("eun_neun") or "—")
+            c3.metric("(으)니까", conj.get("eu_ni_kka") or "—")
+
+    left, middle, right = st.columns(3)
+    actions = [
+        (left, "😵 Chưa nhớ", "forgot"),
+        (middle, "🤔 Nhớ sơ sơ", "partial"),
+        (right, "😄 Nhớ rồi", "remembered"),
+    ]
+    for column, label, result in actions:
+        if column.button(label, use_container_width=True):
+            if "results" not in quiz:
+                quiz["results"] = []
+            quiz["results"].append({
+                "card": card,
+                "result": result
+            })
+            quiz["index"] += 1
+            quiz["show_answer"] = False
+            st.session_state.pop("quiz_eval", None)
+            rerun()
+
+    # Keyboard listener for rating hotkeys 1, 2, 3
+    st.components.v1.html(
+        """
+        <script>
+            const handleKeyDown = (e) => {
+                const activeEl = window.parent.document.activeElement;
+                if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.isContentEditable)) {
+                    return;
                 }
-            </script>
-            """,
-            height=0,
-        )
+                
+                const h1s = Array.from(window.parent.document.querySelectorAll('h1'));
+                const isQuizPage = h1s.some(h1 => h1.innerText && h1.innerText.trim() === "Quiz");
+                if (!isQuizPage) {
+                    return;
+                }
+                
+                if (e.key === '1' || e.key === '2' || e.key === '3') {
+                    const buttons = Array.from(window.parent.document.querySelectorAll('button'));
+                    let targetText = "";
+                    if (e.key === '1') targetText = "Chưa nhớ";
+                    else if (e.key === '2') targetText = "Nhớ sơ sơ";
+                    else if (e.key === '3') targetText = "Nhớ rồi";
+                    
+                    const targetBtn = buttons.find(btn => btn.innerText && btn.innerText.includes(targetText));
+                    if (targetBtn) {
+                        targetBtn.click();
+                        e.preventDefault();
+                    }
+                }
+            };
+
+            try {
+                if (window.parent) {
+                    if (window.parent.__quiz_keydown_handler__) {
+                        window.parent.removeEventListener('keydown', window.parent.__quiz_keydown_handler__, true);
+                    }
+                    window.parent.__quiz_keydown_handler__ = handleKeyDown;
+                    window.parent.addEventListener('keydown', handleKeyDown, true);
+                    console.log("Registered global quiz hotkeys (1, 2, 3).");
+                }
+            } catch (err) {
+                console.error("Failed to attach quiz keydown listener:", err);
+            }
+        </script>
+        """,
+        height=0,
+    )
 
 
 

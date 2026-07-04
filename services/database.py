@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import os
-import libsql
+try:
+    import libsql
+except ImportError:
+    import sqlite3 as libsql
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -289,6 +292,71 @@ def update_schedule(session: Session, vocabulary_id: int, result: str, reversed:
             progress.remember_streak_rev = new_streak
             progress.correct_count_rev = (progress.correct_count_rev or 0) + 1
         progress.last_review_rev = now_utc()
+
+    session.commit()
+
+
+def save_quiz_results(session: Session, results: list[dict]) -> None:
+    if not results:
+        return
+
+    # Extract all unique vocabulary IDs to batch query them
+    vocab_ids = list({r["card"]["id"] for r in results})
+
+    # Query all existing progress rows for these vocabulary items
+    progress_list = session.scalars(
+        select(Progress).where(Progress.vocabulary_id.in_(vocab_ids))
+    ).all()
+
+    # Create mapping of vocab_id -> Progress record
+    progress_map = {p.vocabulary_id: p for p in progress_list}
+
+    now = now_utc()
+
+    for r in results:
+        card = r["card"]
+        result = r["result"]
+        reversed_flag = card.get("reversed", False)
+        vocab_id = card["id"]
+
+        progress = progress_map.get(vocab_id)
+        if progress is None:
+            progress = Progress(vocabulary_id=vocab_id, next_review=now, next_review_rev=now)
+            session.add(progress)
+            progress_map[vocab_id] = progress
+
+        if not reversed_flag:
+            current_streak = progress.remember_streak or 0
+            if result == "forgot":
+                progress.next_review = now + timedelta(minutes=5)
+                progress.remember_streak = 0
+                progress.wrong_count = (progress.wrong_count or 0) + 1
+            elif result == "partial":
+                progress.next_review = now + timedelta(hours=2)
+                progress.correct_count = (progress.correct_count or 0) + 1
+            else:
+                new_streak = current_streak + 1
+                interval_days = {1: 7, 2: 14, 3: 30, 4: 60}.get(new_streak, 90)
+                progress.next_review = now + timedelta(days=interval_days)
+                progress.remember_streak = new_streak
+                progress.correct_count = (progress.correct_count or 0) + 1
+            progress.last_review = now
+        else:
+            current_streak = progress.remember_streak_rev or 0
+            if result == "forgot":
+                progress.next_review_rev = now + timedelta(minutes=5)
+                progress.remember_streak_rev = 0
+                progress.wrong_count_rev = (progress.wrong_count_rev or 0) + 1
+            elif result == "partial":
+                progress.next_review_rev = now + timedelta(hours=2)
+                progress.correct_count_rev = (progress.correct_count_rev or 0) + 1
+            else:
+                new_streak = current_streak + 1
+                interval_days = {1: 7, 2: 14, 3: 30, 4: 60}.get(new_streak, 90)
+                progress.next_review_rev = now + timedelta(days=interval_days)
+                progress.remember_streak_rev = new_streak
+                progress.correct_count_rev = (progress.correct_count_rev or 0) + 1
+            progress.last_review_rev = now
 
     session.commit()
 
