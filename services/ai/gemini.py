@@ -246,14 +246,15 @@ Quy tắc định dạng:
             raise RuntimeError("Chưa tìm thấy Gemini API key. Hãy thêm key vào file .env trước.")
 
         prompt = (
-            "Bạn là một trợ lý giáo dục ngôn ngữ xuất sắc. Hãy tóm tắt và rút gọn nội dung ghi chú ngữ pháp sau đây thành một phiên bản cực kỳ ngắn gọn, súc tích (TL;DR) để người học đọc nhanh dưới 30 giây:\n\n"
+            "Bạn là một trợ lý giáo dục ngôn ngữ xuất sắc. Hãy rút gọn nội dung ghi chú ngữ pháp sau đây thành phiên bản ngắn gọn nhưng đầy đủ thông tin quan trọng.\n\n"
             "Yêu cầu:\n"
-            "1. Tóm tắt ý nghĩa cốt lõi nhất.\n"
-            "2. Đưa ra công thức/cấu trúc tối giản.\n"
-            "3. Giữ lại hoặc tạo đúng 1 ví dụ minh họa tiêu biểu nhất (kèm bản dịch tiếng Việt).\n"
-            "4. Loại bỏ mọi phần giải thích dài dòng, phân tích rườm rà khác.\n"
-            "5. Định dạng bằng Markdown sạch đẹp.\n"
-            "6. Trả về trực tiếp nội dung Markdown, không bao quanh bằng khối code ```markdown.\n\n"
+            "1. Tóm tắt ý nghĩa cốt lõi.\n"
+            "2. Đưa ra công thức/cấu trúc ngữ pháp rõ ràng.\n"
+            "3. BẮT BUỘC giữ lại tất cả các trường hợp ngoại lệ, lưu ý đặc biệt, lỗi sai thường gặp, và sự khác biệt với cấu trúc tương tự (nếu có trong bản gốc). Đây là phần quan trọng nhất, KHÔNG ĐƯỢC lược bỏ.\n"
+            "4. Giữ lại 1-2 ví dụ minh họa tiêu biểu nhất (kèm bản dịch tiếng Việt).\n"
+            "5. Loại bỏ phần giải thích dài dòng, lặp lại, hoặc mở rộng không cần thiết.\n"
+            "6. Định dạng bằng Markdown sạch đẹp.\n"
+            "7. Trả về trực tiếp nội dung Markdown, không bao quanh bằng khối code ```markdown.\n\n"
             "Nội dung ghi chú cần rút gọn:\n"
             f"{content}"
         )
