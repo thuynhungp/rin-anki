@@ -193,6 +193,12 @@ def init_db() -> None:
         columns_notes = {row[1] for row in connection.execute(text("PRAGMA table_info(grammar_notes)"))}
         if "display_order" not in columns_notes:
             connection.execute(text("ALTER TABLE grammar_notes ADD COLUMN display_order INTEGER NOT NULL DEFAULT 0"))
+        if "language" not in columns_notes:
+            connection.execute(text("ALTER TABLE grammar_notes ADD COLUMN language VARCHAR(2) NOT NULL DEFAULT 'KR'"))
+
+        columns_tags = {row[1] for row in connection.execute(text("PRAGMA table_info(grammar_tags)"))}
+        if "language" not in columns_tags:
+            connection.execute(text("ALTER TABLE grammar_tags ADD COLUMN language VARCHAR(2) NOT NULL DEFAULT 'KR'"))
 
         # Migrate all values from example to note if note is empty
         connection.execute(text(
@@ -490,6 +496,7 @@ class GrammarTag(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    language: Mapped[str] = mapped_column(String(2), nullable=False, default="KR", server_default="KR")
     name: Mapped[str] = mapped_column(String(50), nullable=False)
 
     user: Mapped[User] = relationship(back_populates="grammar_tags")
@@ -503,6 +510,7 @@ class GrammarNote(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    language: Mapped[str] = mapped_column(String(2), nullable=False, default="KR", server_default="KR")
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     display_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
@@ -514,9 +522,9 @@ class GrammarNote(Base):
     )
 
 
-def get_grammar_notes(session: Session, user_id: int, search: str = "") -> list[GrammarNote]:
+def get_grammar_notes(session: Session, user_id: int, language: str = "KR", search: str = "") -> list[GrammarNote]:
     from sqlalchemy import func
-    statement = select(GrammarNote).where(GrammarNote.user_id == user_id)
+    statement = select(GrammarNote).where(GrammarNote.user_id == user_id, GrammarNote.language == language)
     if search:
         search_stripped = f"%{search.strip().lower()}%"
         statement = statement.where(
@@ -565,8 +573,8 @@ def reorder_grammar_note(session: Session, note_id: int, direction: str) -> None
     session.commit()
 
 
-def create_grammar_note(session: Session, user_id: int, title: str, content: str) -> GrammarNote:
-    note = GrammarNote(user_id=user_id, title=title.strip(), content=content)
+def create_grammar_note(session: Session, user_id: int, title: str, content: str, language: str = "KR") -> GrammarNote:
+    note = GrammarNote(user_id=user_id, language=language, title=title.strip(), content=content)
     session.add(note)
     session.commit()
     return note
@@ -587,8 +595,8 @@ def delete_grammar_note(session: Session, note_id: int) -> None:
         session.commit()
 
 
-def get_user_tags(session: Session, user_id: int) -> list[GrammarTag]:
-    return list(session.scalars(select(GrammarTag).where(GrammarTag.user_id == user_id).order_by(GrammarTag.name)))
+def get_user_tags(session: Session, user_id: int, language: str = "KR") -> list[GrammarTag]:
+    return list(session.scalars(select(GrammarTag).where(GrammarTag.user_id == user_id, GrammarTag.language == language).order_by(GrammarTag.name)))
 
 
 def set_note_tags(session: Session, note_id: int, tag_names: list[str]) -> None:
@@ -602,15 +610,16 @@ def set_note_tags(session: Session, note_id: int, tag_names: list[str]) -> None:
         if not name_stripped:
             continue
         
-        # Check if tag already exists for this user
+        # Check if tag already exists for this user and language
         tag = session.scalar(
             select(GrammarTag).where(
                 GrammarTag.user_id == note.user_id,
+                GrammarTag.language == note.language,
                 GrammarTag.name == name_stripped
             )
         )
         if not tag:
-            tag = GrammarTag(user_id=note.user_id, name=name_stripped)
+            tag = GrammarTag(user_id=note.user_id, language=note.language, name=name_stripped)
             session.add(tag)
             session.flush()
         current_tags.append(tag)

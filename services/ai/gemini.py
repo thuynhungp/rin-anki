@@ -240,4 +240,37 @@ Quy tắc định dạng:
         )
         raise RuntimeError(f"Tất cả model/key Gemini đều thất bại khi gợi ý thẻ cho ngữ pháp:\n{detail}")
 
+    def shorten_grammar_content(self, content: str) -> str:
+        keys = self._available_keys()
+        if not keys:
+            raise RuntimeError("Chưa tìm thấy Gemini API key. Hãy thêm key vào file .env trước.")
+
+        prompt = (
+            "Bạn là một trợ lý giáo dục ngôn ngữ xuất sắc. Hãy tóm tắt và rút gọn nội dung ghi chú ngữ pháp sau đây thành một phiên bản cực kỳ ngắn gọn, súc tích (TL;DR) để người học đọc nhanh dưới 30 giây:\n\n"
+            "Yêu cầu:\n"
+            "1. Tóm tắt ý nghĩa cốt lõi nhất.\n"
+            "2. Đưa ra công thức/cấu trúc tối giản.\n"
+            "3. Giữ lại hoặc tạo đúng 1 ví dụ minh họa tiêu biểu nhất (kèm bản dịch tiếng Việt).\n"
+            "4. Loại bỏ mọi phần giải thích dài dòng, phân tích rườm rà khác.\n"
+            "5. Định dạng bằng Markdown sạch đẹp.\n"
+            "6. Trả về trực tiếp nội dung Markdown, không bao quanh bằng khối code ```markdown.\n\n"
+            "Nội dung ghi chú cần rút gọn:\n"
+            f"{content}"
+        )
+        
+        contents = [prompt]
+        errors = []
+        for model in MODELS:
+            for key_name, api_key in keys:
+                try:
+                    return self._generate(model, api_key, contents)
+                except Exception as exc:
+                    errors.append(AttemptError(model, key_name, str(exc)))
+                    
+        detail = "\n".join(
+            f"- {error.model} with {error.key_name}: {error.message}" for error in errors
+        )
+        raise RuntimeError(f"Tất cả model/key Gemini đều thất bại khi rút gọn ghi chú:\n{detail}")
+
+
 

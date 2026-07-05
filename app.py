@@ -726,12 +726,28 @@ def word_list_screen() -> None:
             if deck is None:
                 return
             current_lang = deck.language
-            search = st.text_input("Tìm kiếm trong chủ đề")
+            search = st.text_input("Tìm kiếm trong chủ đề", value=st.session_state.get("vocab_search_query", ""))
         else:
             allowed_langs = get_allowed_languages(user["name"])
             selected_lang = st.selectbox("Chọn ngôn ngữ", allowed_langs, key="list_language")
             current_lang = selected_lang
-            search = st.text_input(f"Tìm kiếm từ tiếng {selected_lang}")
+            search = st.text_input(f"Tìm kiếm từ tiếng {selected_lang}", value=st.session_state.get("vocab_search_query", ""))
+            
+        # Initialize search state on first load
+        if "vocab_search_filter_mode" not in st.session_state:
+            st.session_state.vocab_search_filter_mode = filter_mode
+            st.session_state.vocab_search_deck_id = deck.id if deck else None
+            st.session_state.vocab_search_lang = selected_lang
+            st.session_state.vocab_search_query = ""
+            st.session_state.run_vocab_search = True
+            
+        if st.button("🔍 Tìm kiếm từ vựng", use_container_width=True):
+            st.session_state.vocab_search_filter_mode = filter_mode
+            st.session_state.vocab_search_deck_id = deck.id if deck else None
+            st.session_state.vocab_search_lang = selected_lang
+            st.session_state.vocab_search_query = search
+            st.session_state.run_vocab_search = True
+            rerun()
         
         # Smart conjugation check and bulk update UI for Korean decks
         if current_lang == "KR":
@@ -802,18 +818,27 @@ def word_list_screen() -> None:
                             st.success(f"Đã cập nhật thành công {updated_count} từ!")
                             rerun()
  
-        if filter_mode == "Theo chủ đề":
-            frame = vocabulary_frame(session, deck.id, search)
-        else:
-            frame = vocabulary_by_language_frame(session, user["id"], selected_lang, search)
+        frame = pd.DataFrame()
+        if st.session_state.get("run_vocab_search"):
+            saved_mode = st.session_state.vocab_search_filter_mode
+            saved_deck_id = st.session_state.vocab_search_deck_id
+            saved_lang = st.session_state.vocab_search_lang
+            saved_query = st.session_state.vocab_search_query
             
+            if saved_mode == "Theo chủ đề":
+                if saved_deck_id:
+                    frame = vocabulary_frame(session, saved_deck_id, saved_query)
+            else:
+                frame = vocabulary_by_language_frame(session, user["id"], saved_lang, saved_query)
+                
+        if frame.empty:
+            st.info("Nhấp 'Tìm kiếm từ vựng' để hiển thị danh sách từ vựng.")
+            return
+
         display_frame = frame.drop(columns=["db_id"]) if "db_id" in frame.columns else frame
         if "example" in display_frame.columns:
             display_frame = display_frame.drop(columns=["example"])
         display_custom_table(display_frame)
- 
-        if frame.empty:
-            return
  
         st.subheader("Sửa hoặc xóa từ")
         vocab_id = st.selectbox(
@@ -943,6 +968,47 @@ def grammar_notes_screen() -> None:
     user = current_user()
     assert user is not None
     st.title("📚 Ghi chú ngữ pháp")
+
+    st.markdown(
+        """
+        <style>
+        /* Responsive layout for vertical tablet and mobile (width <= 992px) */
+        @media (max-width: 992px) {
+            div[data-testid="stHorizontalBlock"] {
+                flex-direction: column !important;
+                gap: 16px !important;
+            }
+            div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+                width: 100% !important;
+                min-width: 100% !important;
+                flex: 1 1 100% !important;
+            }
+        }
+        /* Responsive layout for horizontal/landscape tablet (width 993px - 1200px) */
+        @media (min-width: 993px) and (max-width: 1200px) {
+            /* Widen the sidebar column to 35% and narrow the detail view to 65% in the Search Tab */
+            div[data-testid="stHorizontalBlock"]:has(input[placeholder="Tìm tiêu đề hoặc nội dung..."]) > div[data-testid="column"]:nth-child(1) {
+                width: 35% !important;
+                min-width: 35% !important;
+                flex: 1 1 35% !important;
+            }
+            div[data-testid="stHorizontalBlock"]:has(input[placeholder="Tìm tiêu đề hoặc nội dung..."]) > div[data-testid="column"]:nth-child(2) {
+                width: 65% !important;
+                min-width: 65% !important;
+                flex: 1 1 65% !important;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # Dynamic language selector - hidden for single-language users
+    allowed_langs = get_allowed_languages(user["name"])
+    if len(allowed_langs) > 1:
+        grammar_lang = st.selectbox("Ngôn ngữ ghi chú", allowed_langs, key="grammar_note_language")
+    else:
+        grammar_lang = allowed_langs[0]
 
     if st.session_state.get("note_success_msg"):
         st.success(st.session_state.note_success_msg)
@@ -1202,9 +1268,9 @@ def grammar_notes_screen() -> None:
                     if not st.session_state.new_note_title.strip():
                         st.warning("Vui lòng điền tiêu đề ghi chú.")
                     else:
-                        new_note = create_grammar_note(session, user["id"], st.session_state.new_note_title, st.session_state.new_note_content)
+                        new_note = create_grammar_note(session, user["id"], st.session_state.new_note_title, st.session_state.new_note_content, language=grammar_lang)
                         # Auto-tag the note based on its title
-                        GrammarAgent().auto_tag_note(session, user["id"], new_note.id, new_note.title)
+                        GrammarAgent().auto_tag_note(session, user["id"], new_note.id, new_note.title, language=grammar_lang)
                         st.session_state.note_success_msg = "Đã lưu ghi chú thành công!"
                         # Reset states
                         st.session_state.pop("new_note_title", None)
@@ -1230,14 +1296,29 @@ def grammar_notes_screen() -> None:
             col_menu, col_content = st.columns([1, 3], gap="large")
             
             with col_menu:
-                search_query = st.text_input("Tìm kiếm", placeholder="Tìm tiêu đề hoặc nội dung...", label_visibility="collapsed")
+                # Initialize search state on first load
+                if "run_note_search" not in st.session_state:
+                    st.session_state.run_note_search = True
+                    st.session_state.last_note_search_query = ""
+                    st.session_state.last_note_search_tags = []
+
+                search_query = st.text_input("Tìm kiếm", placeholder="Tìm tiêu đề hoặc nội dung...", label_visibility="collapsed", value=st.session_state.get("last_note_search_query", ""))
                 # Fetch existing tags for the current user
-                all_tags = [t.name for t in get_user_tags(session, user["id"])]
-                selected_tags = st.multiselect("Lọc theo thẻ (Tags)", options=all_tags, placeholder="Chọn thẻ để lọc...")
+                all_tags = [t.name for t in get_user_tags(session, user["id"], grammar_lang)]
+                selected_tags = st.multiselect("Lọc theo thẻ (Tags)", options=all_tags, placeholder="Chọn thẻ để lọc...", default=st.session_state.get("last_note_search_tags", []))
                 
-                notes = get_grammar_notes(session, user["id"], search_query)
-                if selected_tags:
-                    notes = [n for n in notes if all(any(t.name == stag for t in n.tags) for stag in selected_tags)]
+                if st.button("🔍 Tìm kiếm ghi chú", use_container_width=True):
+                    st.session_state.last_note_search_query = search_query
+                    st.session_state.last_note_search_tags = selected_tags
+                    st.session_state.run_note_search = True
+                    rerun()
+
+                saved_query = st.session_state.get("last_note_search_query", "")
+                saved_tags = st.session_state.get("last_note_search_tags", [])
+                
+                notes = get_grammar_notes(session, user["id"], grammar_lang, saved_query)
+                if saved_tags:
+                    notes = [n for n in notes if all(any(t.name == stag for t in n.tags) for stag in saved_tags)]
                 
                 selected_note = None
                 if not notes:
@@ -1291,7 +1372,7 @@ def grammar_notes_screen() -> None:
                     # Batch auto-tagger control
                     st.write("---")
                     if st.button("🤖 Tự động gắn thẻ thư viện", key="batch_auto_tag_btn", use_container_width=True, help="Quét toàn bộ ghi chú cũ chưa có thẻ và tự động gán thẻ bằng AI"):
-                        all_user_notes = get_grammar_notes(session, user["id"])
+                        all_user_notes = get_grammar_notes(session, user["id"], grammar_lang)
                         notes_to_tag = [n for n in all_user_notes if not n.tags]
                         if not notes_to_tag:
                             st.info("Tất cả ghi chú đều đã được gắn thẻ!")
@@ -1303,7 +1384,7 @@ def grammar_notes_screen() -> None:
                             count = 0
                             for i, note in enumerate(notes_to_tag):
                                 status_text.text(f"Đang gắn thẻ: {note.title} ({i+1}/{total})...")
-                                agent.auto_tag_note(session, user["id"], note.id, note.title)
+                                agent.auto_tag_note(session, user["id"], note.id, note.title, language=grammar_lang)
                                 count += 1
                                 progress_bar.progress(float(i + 1) / total)
                             progress_bar.empty()
@@ -1349,7 +1430,7 @@ def grammar_notes_screen() -> None:
                             else:
                                 update_grammar_note(session, selected_note.id, st.session_state.edit_note_title, st.session_state.edit_note_content)
                                 # Auto-tag the note based on its title
-                                GrammarAgent().auto_tag_note(session, user["id"], selected_note.id, st.session_state.edit_note_title)
+                                GrammarAgent().auto_tag_note(session, user["id"], selected_note.id, st.session_state.edit_note_title, language=grammar_lang)
                                 st.success("Đã cập nhật thay đổi thành công!")
                                 st.session_state.pop("edit_note_id", None)
                                 st.session_state.pop("edit_note_preview_title", None)
@@ -1377,7 +1458,7 @@ def grammar_notes_screen() -> None:
                             st.markdown("---")
                             st.markdown(selected_note.content, unsafe_allow_html=True)
 
-                        col_actions = st.columns([1, 1, 4])
+                        col_actions = st.columns([1, 1, 1.2, 2.8])
                         if col_actions[0].button("Sửa ghi chú", use_container_width=True):
                             st.session_state.edit_note_id = selected_note.id
                             st.session_state.edit_note_title = selected_note.title
@@ -1389,6 +1470,15 @@ def grammar_notes_screen() -> None:
                             delete_grammar_note(session, selected_note.id)
                             st.success("Đã xóa ghi chú thành công!")
                             st.rerun()
+                        if col_actions[2].button("⚡ Rút gọn", use_container_width=True, help="Tóm tắt và rút ngắn ghi chú ngữ pháp bằng AI (TL;DR)"):
+                            with st.spinner("AI đang rút gọn ghi chú..."):
+                                try:
+                                    shortened = GrammarAgent().shorten_note(selected_note.content)
+                                    update_grammar_note(session, selected_note.id, selected_note.title, shortened)
+                                    st.success("Đã rút gọn ghi chú thành công!")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Lỗi khi rút gọn bằng AI: {e}")
 
 
 def quiz_screen() -> None:
