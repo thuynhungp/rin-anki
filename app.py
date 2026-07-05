@@ -182,7 +182,6 @@ VOCABULARY_COLUMN_LABELS = {
     "id": "ID",
     "word": "Từ",
     "meaning": "Nghĩa",
-    "example": "Ví dụ",
     "note": "Ghi chú",
     "conjugation_a_eo_yeo": "아/어/여",
     "conjugation_eun_neun": "은/n는",
@@ -324,7 +323,6 @@ def vocabulary_frame(session, deck_id: int, search: str = "") -> pd.DataFrame:
             "word": row.word,
             "meaning": row.meaning,
             "note": row.note,
-            "example": row.example,
         }
         if is_kr:
             conj = row.conjugation_data
@@ -333,10 +331,10 @@ def vocabulary_frame(session, deck_id: int, search: str = "") -> pd.DataFrame:
             item["conjugation_eu_ni_kka"] = conj.get("eu_ni_kka", "")
         frame_data.append(item)
         
-    frame = pd.DataFrame(frame_data)
-    
-    if search and not frame.empty:
-        search_cols = ["word", "meaning", "example", "note"]
+     frame = pd.DataFrame(frame_data)
+     
+     if search and not frame.empty:
+        search_cols = ["word", "meaning", "note"]
         if is_kr:
             search_cols.extend(["conjugation_a_eo_yeo", "conjugation_eun_neun", "conjugation_eu_ni_kka"])
         search_cols = [c for c in search_cols if c in frame.columns]
@@ -365,7 +363,6 @@ def vocabulary_by_language_frame(session, user_id: int, language: str, search: s
             "word": row.word,
             "meaning": row.meaning,
             "note": row.note,
-            "example": row.example,
         }
         if is_kr:
             conj = row.conjugation_data
@@ -377,7 +374,7 @@ def vocabulary_by_language_frame(session, user_id: int, language: str, search: s
     frame = pd.DataFrame(frame_data)
     
     if search and not frame.empty:
-        search_cols = ["word", "meaning", "example", "note", "Chủ đề"]
+        search_cols = ["word", "meaning", "note", "Chủ đề"]
         if is_kr:
             search_cols.extend(["conjugation_a_eo_yeo", "conjugation_eun_neun", "conjugation_eu_ni_kka"])
         search_cols = [c for c in search_cols if c in frame.columns]
@@ -393,7 +390,6 @@ def form_input_ui(session, deck: Deck) -> None:
         word = cols[0].text_input("Từ")
         meaning = cols[1].text_input("Nghĩa")
         note = st.text_area("Ghi chú")
-        example = st.text_area("Ví dụ")
         submitted = st.form_submit_button("Thêm từ vựng")
 
     if submitted:
@@ -413,7 +409,7 @@ def form_input_ui(session, deck: Deck) -> None:
             {
                 "word": word_clean,
                 "meaning": meaning_clean,
-                "example": example.strip(),
+                "example": "",
                 "note": note.strip(),
             },
         )
@@ -659,7 +655,6 @@ def ai_import_ui(session, deck: Deck) -> None:
                 "import": st.column_config.CheckboxColumn("Nhập"),
                 "word": st.column_config.TextColumn("Từ"),
                 "meaning": st.column_config.TextColumn("Nghĩa"),
-                "example": st.column_config.TextColumn("Ví dụ"),
                 "note": st.column_config.TextColumn("Ghi chú"),
                 "confidence": st.column_config.NumberColumn("Độ tin cậy", min_value=0.0, max_value=1.0),
                 "needs_review": st.column_config.CheckboxColumn("Cần kiểm tra"),
@@ -813,8 +808,8 @@ def word_list_screen() -> None:
             frame = vocabulary_by_language_frame(session, user["id"], selected_lang, search)
             
         display_frame = frame.drop(columns=["db_id"]) if "db_id" in frame.columns else frame
-        if current_lang == "KR" and "note" in display_frame.columns:
-            display_frame = display_frame.drop(columns=["note"])
+        if "example" in display_frame.columns:
+            display_frame = display_frame.drop(columns=["example"])
         display_custom_table(display_frame)
  
         if frame.empty:
@@ -834,7 +829,6 @@ def word_list_screen() -> None:
             word = st.text_input("Từ", value=vocab.word)
             meaning = st.text_input("Nghĩa", value=vocab.meaning)
             note = st.text_area("Ghi chú", value=vocab.note)
-            example = st.text_area("Ví dụ", value=vocab.example)
             
             # Show and edit conjugation forms for Korean deck
             if vocab.language == "KR":
@@ -851,7 +845,7 @@ def word_list_screen() -> None:
             vocab.language = vocab.deck.language
             vocab.word = word.strip()
             vocab.meaning = meaning.strip()
-            vocab.example = example.strip()
+            vocab.example = ""
             vocab.note = note.strip()
             if vocab.language == "KR":
                 vocab.conjugation_data = {
@@ -1457,7 +1451,6 @@ def quiz_screen() -> None:
                         "Nghĩa": card["meaning"],
                         "Chiều ôn": side_str,
                         "Trạng thái": status_str,
-                        "Ví dụ": card["example"],
                         "Ghi chú": card["note"]
                     })
                 
@@ -1610,8 +1603,6 @@ def quiz_screen() -> None:
     
     if card["note"]:
         st.info(card["note"])
-    if card["example"]:
-        st.write(card["example"])
 
     # Display conjugation columns if it's a Korean card in Korean deck
     if quiz["deck_language"] == "KR":

@@ -11,14 +11,23 @@ def entries_to_preview_frame(entries: list[dict[str, Any]]) -> pd.DataFrame:
     rows = []
     for entry in entries:
         confidence = float(entry.get("confidence", 0))
+        note_val = str(entry.get("note") or "").strip()
+        example_val = str(entry.get("example") or "").strip()
+        
+        combined_note = note_val
+        if example_val:
+            if combined_note:
+                combined_note = f"{combined_note}\nVí dụ: {example_val}"
+            else:
+                combined_note = f"Ví dụ: {example_val}"
+                
         rows.append(
             {
                 "import": True,
                 "language": entry.get("language", ""),
                 "word": entry.get("word", ""),
                 "meaning": entry.get("meaning", ""),
-                "example": entry.get("example", ""),
-                "note": entry.get("note", ""),
+                "note": combined_note,
                 "confidence": confidence,
                 "needs_review": confidence < 0.7,
             }

@@ -164,8 +164,8 @@ def now_utc() -> datetime:
 
 
 def init_db() -> None:
-    Base.metadata.create_all(engine)
     with engine.begin() as connection:
+        Base.metadata.create_all(bind=connection)
         columns_decks = {row[1] for row in connection.execute(text("PRAGMA table_info(decks)"))}
         if "language" not in columns_decks:
             connection.execute(text("ALTER TABLE decks ADD COLUMN language VARCHAR(2) NOT NULL DEFAULT 'KR'"))
@@ -193,6 +193,15 @@ def init_db() -> None:
         columns_notes = {row[1] for row in connection.execute(text("PRAGMA table_info(grammar_notes)"))}
         if "display_order" not in columns_notes:
             connection.execute(text("ALTER TABLE grammar_notes ADD COLUMN display_order INTEGER NOT NULL DEFAULT 0"))
+
+        # Migrate all values from example to note if note is empty
+        connection.execute(text(
+            "UPDATE vocabulary SET note = example WHERE (note IS NULL OR note = '') AND (example IS NOT NULL AND example != '')"
+        ))
+        # Clear out example column values after migration
+        connection.execute(text(
+            "UPDATE vocabulary SET example = '' WHERE (example IS NOT NULL AND example != '')"
+        ))
 
     with SessionLocal() as session:
         for name in USERS:
@@ -230,13 +239,24 @@ def create_deck(session: Session, user_id: int, name: str, language: str = "KR")
 def add_vocabulary(session: Session, deck_id: int, row: dict[str, str]) -> Vocabulary:
     deck = session.get(Deck, deck_id)
     language = deck.language if deck is not None else row.get("language", "KR")
+    
+    note_val = str(row.get("note") or "").strip()
+    example_val = str(row.get("example") or "").strip()
+    
+    combined_note = note_val
+    if example_val:
+        if combined_note:
+            combined_note = f"{combined_note}\nVí dụ: {example_val}"
+        else:
+            combined_note = f"Ví dụ: {example_val}"
+            
     vocab = Vocabulary(
         deck_id=deck_id,
         language=language,
         word=row["word"],
         meaning=row["meaning"],
-        example=row.get("example", ""),
-        note=row.get("note", ""),
+        example="",
+        note=combined_note,
     )
     session.add(vocab)
     session.flush()
