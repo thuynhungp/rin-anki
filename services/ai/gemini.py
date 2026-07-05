@@ -187,3 +187,57 @@ Quy tắc định dạng:
         )
         raise RuntimeError(f"Tất cả model/key Gemini đều thất bại khi quét OCR ghi chú ngữ pháp:\n{detail}")
 
+    def suggest_tags_for_title(self, title: str, existing_tags: list[str]) -> list[str]:
+        keys = self._available_keys()
+        if not keys:
+            raise RuntimeError("Chưa tìm thấy Gemini API key. Hãy thêm key vào file .env trước.")
+
+        import json
+        existing_tags_str = ", ".join(existing_tags) if existing_tags else "Không có thẻ nào"
+        
+        prompt = (
+            "Bạn là một trợ lý giáo dục ngôn ngữ xuất sắc chuyên phân tích và gắn thẻ ngữ pháp.\n"
+            f"Hãy phân tích tiêu đề ghi chú ngữ pháp sau đây: \"{title}\"\n\n"
+            f"Danh sách các thẻ (tags) hiện có trong hệ thống của người học:\n{existing_tags_str}\n\n"
+            "Nhiệm vụ:\n"
+            "1. Phân tích tiêu đề ngữ pháp này và xác định 1-3 thẻ (nhãn) phù hợp nhất.\n"
+            "2. Hãy ƯU TIÊN tối đa việc chọn thẻ phù hợp từ danh sách các thẻ hiện có nếu có sự tương đồng cao về nghĩa.\n"
+            "3. Nếu không có thẻ nào hiện có phù hợp, hoặc cần thêm thẻ mới để phân loại chính xác hơn, bạn có thể tự đề xuất thêm thẻ mới (ví dụ: cấp độ 'sơ cấp', 'trung cấp', hoặc chủ đề 'kính ngữ', 'giả định', 'nguyên nhân', v.v.).\n"
+            "4. Định dạng của thẻ phải là chữ thường, ngắn gọn, súc tích (1-3 từ).\n\n"
+            "Quy tắc phản hồi:\n"
+            "- Trả về duy nhất một mảng JSON chứa các chuỗi đại diện cho tên các thẻ được gán (ví dụ: [\"sơ cấp\", \"kính ngữ\"]).\n"
+            "- Không Markdown, không giải thích gì thêm, không bao quanh bằng khối code ```json.\n"
+        )
+        
+        contents = [prompt]
+        errors = []
+        for model in MODELS:
+            for key_name, api_key in keys:
+                try:
+                    raw = self._generate(model, api_key, contents)
+                    cleaned = raw.strip()
+                    if cleaned.startswith("```"):
+                        import re
+                        cleaned = re.sub(r"^```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
+                        cleaned = re.sub(r"```$", "", cleaned).strip()
+                    
+                    import re
+                    match = re.search(r"\[[\s\S]*\]", cleaned)
+                    if not match:
+                        raise ValueError("Không tìm thấy mảng JSON trong phản hồi.")
+                    data = json.loads(match.group(0))
+                    if not isinstance(data, list):
+                        raise ValueError("Phản hồi không phải là một mảng JSON.")
+                    
+                    # Convert to lowercase and clean up
+                    cleaned_tags = [str(t).strip().lower() for t in data if t]
+                    return list(set(cleaned_tags))
+                except Exception as exc:
+                    errors.append(AttemptError(model, key_name, str(exc)))
+                    
+        detail = "\n".join(
+            f"- {error.model} with {error.key_name}: {error.message}" for error in errors
+        )
+        raise RuntimeError(f"Tất cả model/key Gemini đều thất bại khi gợi ý thẻ cho ngữ pháp:\n{detail}")
+
+

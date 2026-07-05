@@ -23,6 +23,7 @@ from services.database import (
     User,
     Vocabulary,
     GrammarNote,
+    GrammarTag,
     add_vocabulary,
     check_vocabulary_exists,
     create_deck,
@@ -38,6 +39,8 @@ from services.database import (
     update_grammar_note,
     delete_grammar_note,
     reorder_grammar_note,
+    get_user_tags,
+    set_note_tags,
 )
 
 st.set_page_config(page_title="Rin Anki", page_icon="📚", layout="wide")
@@ -1205,7 +1208,9 @@ def grammar_notes_screen() -> None:
                     if not st.session_state.new_note_title.strip():
                         st.warning("Vui lòng điền tiêu đề ghi chú.")
                     else:
-                        create_grammar_note(session, user["id"], st.session_state.new_note_title, st.session_state.new_note_content)
+                        new_note = create_grammar_note(session, user["id"], st.session_state.new_note_title, st.session_state.new_note_content)
+                        # Auto-tag the note based on its title
+                        GrammarAgent().auto_tag_note(session, user["id"], new_note.id, new_note.title)
                         st.session_state.note_success_msg = "Đã lưu ghi chú thành công!"
                         # Reset states
                         st.session_state.pop("new_note_title", None)
@@ -1232,7 +1237,13 @@ def grammar_notes_screen() -> None:
             
             with col_menu:
                 search_query = st.text_input("Tìm kiếm", placeholder="Tìm tiêu đề hoặc nội dung...", label_visibility="collapsed")
+                # Fetch existing tags for the current user
+                all_tags = [t.name for t in get_user_tags(session, user["id"])]
+                selected_tags = st.multiselect("Lọc theo thẻ (Tags)", options=all_tags, placeholder="Chọn thẻ để lọc...")
+                
                 notes = get_grammar_notes(session, user["id"], search_query)
+                if selected_tags:
+                    notes = [n for n in notes if all(any(t.name == stag for t in n.tags) for stag in selected_tags)]
                 
                 selected_note = None
                 if not notes:
@@ -1253,6 +1264,13 @@ def grammar_notes_screen() -> None:
                             if st.button(f"📓 {note.title}", key=f"menu_note_{note.id}", use_container_width=True, type=btn_type):
                                 st.session_state.selected_note_id = note.id
                                 st.rerun()
+                            # Render small tag pills below the button
+                            if note.tags:
+                                tag_html = " ".join([
+                                    f'<span style="background-color: rgba(13, 148, 136, 0.1); color: var(--primary-color, #0D9488); border: 1px solid rgba(13, 148, 136, 0.2); padding: 1px 6px; border-radius: 12px; font-size: 10px; margin-right: 4px; display: inline-block; font-weight: 500;">#{t.name}</span>'
+                                    for t in note.tags
+                                ])
+                                st.markdown(f'<div style="margin-top: -6px; margin-bottom: 8px; padding-left: 8px;">{tag_html}</div>', unsafe_allow_html=True)
 
                     # Reordering controls
                     if selected_note:
@@ -1275,6 +1293,29 @@ def grammar_notes_screen() -> None:
                         if col_down.button("⬇️ Xuống", disabled=not can_down, use_container_width=True):
                             reorder_grammar_note(session, selected_note.id, "down")
                             rerun()
+
+                    # Batch auto-tagger control
+                    st.write("---")
+                    if st.button("🤖 Tự động gắn thẻ thư viện", key="batch_auto_tag_btn", use_container_width=True, help="Quét toàn bộ ghi chú cũ chưa có thẻ và tự động gán thẻ bằng AI"):
+                        all_user_notes = get_grammar_notes(session, user["id"])
+                        notes_to_tag = [n for n in all_user_notes if not n.tags]
+                        if not notes_to_tag:
+                            st.info("Tất cả ghi chú đều đã được gắn thẻ!")
+                        else:
+                            progress_bar = st.progress(0.0)
+                            status_text = st.empty()
+                            total = len(notes_to_tag)
+                            agent = GrammarAgent()
+                            count = 0
+                            for i, note in enumerate(notes_to_tag):
+                                status_text.text(f"Đang gắn thẻ: {note.title} ({i+1}/{total})...")
+                                agent.auto_tag_note(session, user["id"], note.id, note.title)
+                                count += 1
+                                progress_bar.progress(float(i + 1) / total)
+                            progress_bar.empty()
+                            status_text.empty()
+                            st.success(f"Đã tự động gắn thẻ thành công cho {count} ghi chú!")
+                            st.rerun()
             
             with col_content:
                 if selected_note is not None:
@@ -1313,6 +1354,8 @@ def grammar_notes_screen() -> None:
                                 st.warning("Vui lòng nhập tiêu đề.")
                             else:
                                 update_grammar_note(session, selected_note.id, st.session_state.edit_note_title, st.session_state.edit_note_content)
+                                # Auto-tag the note based on its title
+                                GrammarAgent().auto_tag_note(session, user["id"], selected_note.id, st.session_state.edit_note_title)
                                 st.success("Đã cập nhật thay đổi thành công!")
                                 st.session_state.pop("edit_note_id", None)
                                 st.session_state.pop("edit_note_preview_title", None)
@@ -1327,7 +1370,16 @@ def grammar_notes_screen() -> None:
                         # View mode
                         with st.container(border=True):
                             st.markdown(f"## {selected_note.title}", unsafe_allow_html=True)
-                            st.caption(f"Ngày lưu: {selected_note.created_at.strftime('%d/%m/%Y %H:%M:%S')}")
+                            col_meta_l, col_meta_r = st.columns([1, 1])
+                            with col_meta_l:
+                                st.caption(f"Ngày lưu: {selected_note.created_at.strftime('%d/%m/%Y %H:%M:%S')}")
+                            with col_meta_r:
+                                if selected_note.tags:
+                                    tag_html = " ".join([
+                                        f'<span style="background-color: rgba(13, 148, 136, 0.1); color: var(--primary-color, #0D9488); border: 1px solid rgba(13, 148, 136, 0.2); padding: 2px 8px; border-radius: 12px; font-size: 12px; margin-right: 6px; display: inline-block; font-weight: 500;">#{t.name}</span>'
+                                        for t in selected_note.tags
+                                    ])
+                                    st.markdown(f'<div style="text-align: right; margin-top: -4px;">{tag_html}</div>', unsafe_allow_html=True)
                             st.markdown("---")
                             st.markdown(selected_note.content, unsafe_allow_html=True)
 
@@ -1845,7 +1897,7 @@ def main() -> None:
     st.markdown("---")
     st.markdown(
         "<div style='text-align: center; color: var(--text-color); opacity: 0.5; font-size: 0.8rem; margin-top: 24px; margin-bottom: 8px;'>"
-        "Rin Anki v20260704 • Phát triển bởi Rin"
+        "Rin Anki v20260705 • Phát triển bởi Rin"
         "</div>",
         unsafe_allow_html=True
     )

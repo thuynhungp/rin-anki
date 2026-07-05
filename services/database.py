@@ -11,10 +11,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from sqlalchemy import (
+    Column,
     DateTime,
     ForeignKey,
     Integer,
     String,
+    Table,
     Text,
     create_engine,
     select,
@@ -45,6 +47,7 @@ class User(Base):
     theme: Mapped[str] = mapped_column(String(50), nullable=False, default="Dịu mắt")
     decks: Mapped[list["Deck"]] = relationship(back_populates="user", cascade="all, delete")
     grammar_notes: Mapped[list["GrammarNote"]] = relationship(back_populates="user", cascade="all, delete")
+    grammar_tags: Mapped[list["GrammarTag"]] = relationship(back_populates="user", cascade="all, delete")
 
 
 class Deck(Base):
@@ -454,6 +457,27 @@ def due_vocabulary_cards(session: Session, deck_id: int, limit: int) -> list[dic
     ]
 
 
+grammar_note_tags = Table(
+    "grammar_note_tags",
+    Base.metadata,
+    Column("note_id", Integer, ForeignKey("grammar_notes.id", ondelete="CASCADE"), primary_key=True),
+    Column("tag_id", Integer, ForeignKey("grammar_tags.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+class GrammarTag(Base):
+    __tablename__ = "grammar_tags"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(50), nullable=False)
+
+    user: Mapped[User] = relationship(back_populates="grammar_tags")
+    notes: Mapped[list["GrammarNote"]] = relationship(
+        secondary="grammar_note_tags", back_populates="tags"
+    )
+
+
 class GrammarNote(Base):
     __tablename__ = "grammar_notes"
 
@@ -465,6 +489,9 @@ class GrammarNote(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: now_utc())
 
     user: Mapped[User] = relationship(back_populates="grammar_notes")
+    tags: Mapped[list["GrammarTag"]] = relationship(
+        secondary="grammar_note_tags", back_populates="notes"
+    )
 
 
 def get_grammar_notes(session: Session, user_id: int, search: str = "") -> list[GrammarNote]:
@@ -538,4 +565,37 @@ def delete_grammar_note(session: Session, note_id: int) -> None:
     if note:
         session.delete(note)
         session.commit()
+
+
+def get_user_tags(session: Session, user_id: int) -> list[GrammarTag]:
+    return list(session.scalars(select(GrammarTag).where(GrammarTag.user_id == user_id).order_by(GrammarTag.name)))
+
+
+def set_note_tags(session: Session, note_id: int, tag_names: list[str]) -> None:
+    note = session.get(GrammarNote, note_id)
+    if not note:
+        return
+    
+    current_tags = []
+    for name in tag_names:
+        name_stripped = name.strip()
+        if not name_stripped:
+            continue
+        
+        # Check if tag already exists for this user
+        tag = session.scalar(
+            select(GrammarTag).where(
+                GrammarTag.user_id == note.user_id,
+                GrammarTag.name == name_stripped
+            )
+        )
+        if not tag:
+            tag = GrammarTag(user_id=note.user_id, name=name_stripped)
+            session.add(tag)
+            session.flush()
+        current_tags.append(tag)
+        
+    note.tags = current_tags
+    session.commit()
+
 

@@ -21,3 +21,19 @@ class GrammarAgent:
         
         # Call the extractor with the known vocabulary words
         return self.extractor.extract_grammar_note(image, known_words=known_words)
+
+    def auto_tag_note(self, session, user_id: int, note_id: int, title: str) -> list[str]:
+        from services.database import get_user_tags, set_note_tags
+        # Get list of existing tag names
+        existing_tags = [t.name for t in get_user_tags(session, user_id)]
+        try:
+            suggested = self.extractor.suggest_tags_for_title(title, existing_tags)
+            if suggested:
+                set_note_tags(session, note_id, suggested)
+                return suggested
+        except Exception as e:
+            # Fail silently to not block note saving but log the error
+            import logging
+            logging.error(f"Error auto-tagging grammar note: {e}")
+        return []
+
