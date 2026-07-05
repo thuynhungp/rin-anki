@@ -331,9 +331,9 @@ def vocabulary_frame(session, deck_id: int, search: str = "") -> pd.DataFrame:
             item["conjugation_eu_ni_kka"] = conj.get("eu_ni_kka", "")
         frame_data.append(item)
         
-     frame = pd.DataFrame(frame_data)
-     
-     if search and not frame.empty:
+    frame = pd.DataFrame(frame_data)
+    
+    if search and not frame.empty:
         search_cols = ["word", "meaning", "note"]
         if is_kr:
             search_cols.extend(["conjugation_a_eo_yeo", "conjugation_eun_neun", "conjugation_eu_ni_kka"])
