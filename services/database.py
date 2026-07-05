@@ -193,12 +193,17 @@ def init_db() -> None:
         columns_notes = {row[1] for row in connection.execute(text("PRAGMA table_info(grammar_notes)"))}
         if "display_order" not in columns_notes:
             connection.execute(text("ALTER TABLE grammar_notes ADD COLUMN display_order INTEGER NOT NULL DEFAULT 0"))
-        if "language" not in columns_notes:
-            connection.execute(text("ALTER TABLE grammar_notes ADD COLUMN language VARCHAR(2) NOT NULL DEFAULT 'KR'"))
 
-        columns_tags = {row[1] for row in connection.execute(text("PRAGMA table_info(grammar_tags)"))}
-        if "language" not in columns_tags:
+        # Add language column to grammar_notes and grammar_tags
+        # Use try/except because PRAGMA table_info can be unreliable on Turso/libsql
+        try:
+            connection.execute(text("ALTER TABLE grammar_notes ADD COLUMN language VARCHAR(2) NOT NULL DEFAULT 'KR'"))
+        except Exception:
+            pass  # Column already exists
+        try:
             connection.execute(text("ALTER TABLE grammar_tags ADD COLUMN language VARCHAR(2) NOT NULL DEFAULT 'KR'"))
+        except Exception:
+            pass  # Column already exists
 
         # Migrate all values from example to note if note is empty
         connection.execute(text(
