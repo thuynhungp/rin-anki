@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 try:
     import libsql
+    _LIBSQL_AVAILABLE = True
 except ImportError:
-    import sqlite3 as libsql
+    import sqlite3 as _sqlite3
+    _LIBSQL_AVAILABLE = False
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -37,6 +39,30 @@ USERS = ("Rin", "Friend")
 
 class Base(DeclarativeBase):
     pass
+
+
+# ── GrammarTag + join table must be defined before User so FK/relationship
+#    forward-references resolve without a mapper-configuration crash.
+class GrammarTag(Base):
+    __tablename__ = "grammar_tags"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    language: Mapped[str] = mapped_column(String(2), nullable=False, default="KR", server_default="KR")
+    name: Mapped[str] = mapped_column(String(50), nullable=False)
+
+    user: Mapped["User"] = relationship(back_populates="grammar_tags")
+    notes: Mapped[list["GrammarNote"]] = relationship(
+        secondary="grammar_note_tags", back_populates="tags"
+    )
+
+
+grammar_note_tags = Table(
+    "grammar_note_tags",
+    Base.metadata,
+    Column("note_id", Integer, ForeignKey("grammar_notes.id", ondelete="CASCADE"), primary_key=True),
+    Column("tag_id", Integer, ForeignKey("grammar_tags.id", ondelete="CASCADE"), primary_key=True),
+)
 
 
 class User(Base):
@@ -126,15 +152,20 @@ class LibSQLConnectionProxy:
 def get_connection():
     db_url = os.getenv("TURSO_DATABASE_URL")
     auth_token = os.getenv("TURSO_AUTH_TOKEN")
-    
-    if db_url and auth_token:
-        # Connect to remote Turso database
-        conn = libsql.connect(database=db_url, auth_token=auth_token)
+
+    if _LIBSQL_AVAILABLE:
+        if db_url and auth_token:
+            # Connect to remote Turso database
+            conn = libsql.connect(database=db_url, auth_token=auth_token)
+        else:
+            # Fallback to local libsql SQLite database
+            DATA_DIR.mkdir(exist_ok=True)
+            conn = libsql.connect(str(DB_PATH))
     else:
-        # Fallback to local SQLite database
+        # libsql not installed – use stdlib sqlite3 (local only)
         DATA_DIR.mkdir(exist_ok=True)
-        conn = libsql.connect(str(DB_PATH))
-        
+        conn = _sqlite3.connect(str(DB_PATH), check_same_thread=False)
+
     return LibSQLConnectionProxy(conn)
 
 
@@ -164,8 +195,9 @@ def now_utc() -> datetime:
 
 
 def init_db() -> None:
+    # create_all must use the engine directly; bind= was removed in SQLAlchemy 2.0
+    Base.metadata.create_all(engine)
     with engine.begin() as connection:
-        Base.metadata.create_all(bind=connection)
         columns_decks = {row[1] for row in connection.execute(text("PRAGMA table_info(decks)"))}
         if "language" not in columns_decks:
             connection.execute(text("ALTER TABLE decks ADD COLUMN language VARCHAR(2) NOT NULL DEFAULT 'KR'"))
@@ -502,28 +534,6 @@ def due_vocabulary_cards(session: Session, deck_id: int, limit: int) -> list[dic
         }
         for c in selected_cards
     ]
-
-
-grammar_note_tags = Table(
-    "grammar_note_tags",
-    Base.metadata,
-    Column("note_id", Integer, ForeignKey("grammar_notes.id", ondelete="CASCADE"), primary_key=True),
-    Column("tag_id", Integer, ForeignKey("grammar_tags.id", ondelete="CASCADE"), primary_key=True),
-)
-
-
-class GrammarTag(Base):
-    __tablename__ = "grammar_tags"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
-    language: Mapped[str] = mapped_column(String(2), nullable=False, default="KR", server_default="KR")
-    name: Mapped[str] = mapped_column(String(50), nullable=False)
-
-    user: Mapped[User] = relationship(back_populates="grammar_tags")
-    notes: Mapped[list["GrammarNote"]] = relationship(
-        secondary="grammar_note_tags", back_populates="tags"
-    )
 
 
 class GrammarNote(Base):
