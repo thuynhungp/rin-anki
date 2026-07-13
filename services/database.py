@@ -467,12 +467,28 @@ def due_vocabulary_cards(session: Session, deck_id: int, limit: int) -> list[dic
                 "due_time": next_rev_rev
             })
             
-    # Sort cards by due_time so that more overdue cards are shown first
-    cards.sort(key=lambda c: c["due_time"])
-    
+    # Shuffle all candidate cards randomly before selecting
+    import random
+    random.shuffle(cards)
+
     # Take up to the limit
     selected_cards = cards[:limit]
-    
+
+    # Ensure cards for the same vocabulary item are not placed consecutively.
+    # Use a simple retry-based approach: attempt to re-shuffle until no two
+    # adjacent cards share the same vocab id (or give up after a few tries).
+    def has_adjacent_duplicates(lst: list) -> bool:
+        for i in range(len(lst) - 1):
+            if lst[i]["vocab"].id == lst[i + 1]["vocab"].id:
+                return True
+        return False
+
+    for _ in range(10):
+        if not has_adjacent_duplicates(selected_cards):
+            break
+        # Try to separate same-vocab neighbours via an interleave pass
+        random.shuffle(selected_cards)
+
     # Format them as the quiz expects
     return [
         {
