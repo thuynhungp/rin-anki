@@ -195,6 +195,16 @@ def now_utc() -> datetime:
 
 
 def init_db() -> None:
+    # Register expense models
+    from services.expense.models import (
+        ExpenseAccount,
+        ExpenseDebt,
+        ExpenseSetting,
+        ExpenseSubscription,
+        ExpenseTransaction,
+    )
+    from services.expense.service import ensure_default_accounts
+
     # create_all must use the engine directly; bind= was removed in SQLAlchemy 2.0
     Base.metadata.create_all(engine)
     with engine.begin() as connection:
@@ -262,6 +272,10 @@ def init_db() -> None:
                     if deck.name == "Bai 1":
                         deck.name = "Bài 1"
         session.commit()
+
+        rin_user = session.scalar(select(User).where(User.name == "Rin"))
+        if rin_user:
+            ensure_default_accounts(session, rin_user.id)
 
 
 def get_users(session: Session) -> list[User]:

@@ -42,6 +42,7 @@ from services.database import (
     get_user_tags,
     set_note_tags,
 )
+from services.expense.ui import expense_screen
 
 st.set_page_config(page_title="Rin Anki", page_icon="📚", layout="wide")
 
@@ -174,6 +175,14 @@ def get_allowed_languages(user_name: str) -> list[str]:
     elif user_name == "Friend":
         return ["EN", "JP", "CN"]
     return LANGUAGES
+
+
+def get_menu_items(user_name: str) -> list[str]:
+    items = ["Thêm từ vựng", "Danh sách từ", "Chủ đề", "Ghi chú ngữ pháp", "Quiz"]
+    if user_name == "Rin":
+        items.append("Quản lý chi tiêu")
+    items.append("HDSD")
+    return items
 
 
 MENU_ITEMS = ["Thêm từ vựng", "Danh sách từ", "Chủ đề", "Ghi chú ngữ pháp", "Quiz", "HDSD"]
@@ -1907,15 +1916,19 @@ def render_top_bar() -> str:
             st.query_params.clear()
             rerun()
 
+    user = current_user()
+    user_name = user["name"] if user else ""
+    menu_items = get_menu_items(user_name)
+
     # Determine default menu index from query parameters
     default_menu = st.query_params.get("menu", "Thêm từ vựng")
-    if default_menu not in MENU_ITEMS:
+    if default_menu not in menu_items:
         default_menu = "Thêm từ vựng"
-    default_index = MENU_ITEMS.index(default_menu)
+    default_index = menu_items.index(default_menu)
 
     selected_menu = st.radio(
         "Menu",
-        MENU_ITEMS,
+        menu_items,
         index=default_index,
         horizontal=True,
         label_visibility="collapsed",
@@ -1971,6 +1984,10 @@ def main() -> None:
             grammar_notes_screen()
         elif page == "Quiz":
             quiz_screen()
+        elif page == "Quản lý chi tiêu":
+            user = current_user()
+            if user:
+                expense_screen(user["id"])
         else:
             hdsd_screen()
 

@@ -16,6 +16,11 @@
   - **Form Input**: Nhập từ, nghĩa, ví dụ, ghi chú thủ công.
   - **Nhập bằng AI (Gemini)**: Quét chữ viết tay từ hình ảnh hoặc phân tích ghi chú văn bản thô. Hỗ trợ xem trước và chỉnh sửa trực tiếp trước khi nhập.
 - **Thuật toán ôn tập (Quiz)**: Phỏng theo cơ chế **Spaced Repetition** (Lặp lại ngắt quãng) tương tự Anki với 3 mức độ nhớ: "Chưa nhớ" (5 phút), "Nhớ sơ sơ" (2 giờ), và "Nhớ rồi" (tăng dần 7 ➜ 14 ➜ 30 ➜ 60 ➜ 90 ngày).
+- **Quản lý chi tiêu thông minh (Dành riêng cho Rin)**:
+  - **Quét Bank bằng AI (Gemini Vision)**: Bóc tách tự động giao dịch ngân hàng/ví điện tử (MSB, ACB, Momo...) từ nhiều ảnh chụp màn hình, tự động gán danh mục, hỗ trợ chỉnh sửa nhanh trước khi lưu.
+  - **Chu kỳ tài chính theo ngày nhận Lương**: Các tháng tự động bắt đầu từ ngày nhận lương thực tế (ví dụ: ngày 02/07 chưa có lương tháng 7 vẫn tự động ghi log vào Kỳ lương tháng 6).
+  - **Tự động đối chiếu số dư (Bank Reconciliation)**: So sánh số dư sổ sách và số dư thực tế, phát hiện lệch số tiền ngay lập tức.
+  - **Quản lý Gói tháng & Sổ nợ**: Theo dõi các subscription (iCloud, Spotify, Claude, SMS...) và các khoản mượn nợ.
 - **Tích hợp Tab HDSD (Hướng dẫn sử dụng)**: Hướng dẫn chi tiết cách thức hoạt động của các tính năng ngay trong ứng dụng.
 - **Cơ sở dữ liệu SQLite**: Lưu trữ tại `data/database.db` có cơ chế tự động chạy di chuyển cột (migration) an toàn khi nâng cấp ứng dụng.
 
